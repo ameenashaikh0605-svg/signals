@@ -1,0 +1,102 @@
+{
+  "port": 8765,
+  "poll_seconds": 15,
+  "enabled_modes": [
+    "swing",
+    "intraday",
+    "fast"
+  ],
+  "modes": {
+    "swing": {
+      "label": "📅 SWING",
+      "timeframe": "1d",
+      "rule": "supertrend",
+      "exit": "trail"
+    },
+    "intraday": {
+      "label": "⚡ INTRADAY (experimental)",
+      "timeframe": "15m",
+      "rule": "orb",
+      "exit": "target",
+      "crypto_timeframe": "1h",
+      "crypto_rule": "breakout",
+      "crypto_exit": "trail"
+    },
+    "fast": {
+      "label": "⚡ FAST 1m/5m/20m (experimental)",
+      "timeframe": "1m",
+      "rule": "scalp",
+      "exit": "target"
+    }
+  },
+  "selected": "ALL",
+  "strategy": {},
+  "exit_before_close_min": 15,
+  "telegram": {
+    "bot_token": "",
+    "chat_id": "",
+    "bias_alerts": false
+  },
+  "risk": {
+    "_help": "Position size and daily limits. Set these to YOUR numbers. Lot sizes change: check IndMoney.",
+    "INR": {
+      "capital": 100000,
+      "max_loss_per_trade": 1000,
+      "daily_loss_limit": 3000
+    },
+    "USD": {
+      "capital": 1000,
+      "max_loss_per_trade": 10,
+      "daily_loss_limit": 30
+    },
+    "max_trades_per_day": 6,
+    "option_delta": 0.5,
+    "lot_size": {
+      "^NSEI": 65,
+      "^BSESN": 20,
+      "^NSEBANK": 30,
+      "NIFTY_MID_SELECT.NS": 120
+    }
+  },
+  "timemachine": {
+    "enabled": true,
+    "replays": 5000
+  },
+  "watch": [
+    {
+      "name": "NIFTY 50",
+      "code": "^NSEI"
+    },
+    {
+      "name": "SENSEX",
+      "code": "^BSESN"
+    },
+    {
+      "name": "BITCOIN",
+      "code": "BTCUSDT"
+    },
+    {
+      "name": "MIDCAP NIFTY",
+      "code": "NIFTY_MID_SELECT.NS"
+    },
+    {
+      "name": "GOLD",
+      "code": "GC=F"
+    },
+    {
+      "name": "BANK NIFTY",
+      "code": "^NSEBANK"
+    },
+    {
+      "name": "CRUDE OIL",
+      "code": "CL=F"
+    },
+    {
+      "name": "DOW JONES",
+      "code": "^DJI"
+    }
+  ],
+  "strikes": {
+    "RELIANCE.NS": 20
+  }
+}

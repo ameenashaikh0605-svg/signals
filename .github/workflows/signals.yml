@@ -1,0 +1,48 @@
+name: Buy/Sell signals
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may start it a few minutes late)
+  workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: "Only send a Telegram test message"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: signals
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Kolkata
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Telegram test
+        if: ${{ inputs.test_telegram }}
+        run: python cloud_scan.py --test-telegram
+      - name: Check the markets
+        if: ${{ !inputs.test_telegram }}
+        run: python cloud_scan.py
+      - name: Save open trades for the next run
+        if: ${{ !inputs.test_telegram }}
+        run: |
+          git config user.name "signals-bot"
+          git config user.email "signals-bot@users.noreply.github.com"
+          git add cloud_state.json risk_today.json signals_log.csv 2>/dev/null || true
+          if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
+          git commit -m "Save signal state [skip ci]"
+          for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 5; done
+          exit 1
