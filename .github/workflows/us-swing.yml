@@ -33,10 +33,10 @@ jobs:
           python-version: "3.12"
       - name: Telegram test
         if: ${{ inputs.test_telegram }}
-        run: python us_swing.py --test-telegram
+        run: python swing_scan.py us --test-telegram
       - name: Check S&P 500 stocks
         if: ${{ !inputs.test_telegram }}
-        run: python us_swing.py
+        run: python swing_scan.py us
       - name: Save open trades for the next run
         if: ${{ !inputs.test_telegram }}
         run: |

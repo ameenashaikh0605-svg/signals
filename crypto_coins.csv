@@ -1,0 +1,31 @@
+symbol,name,sector
+BTCUSDT,Bitcoin,Crypto
+ETHUSDT,Ethereum,Crypto
+BNBUSDT,BNB,Crypto
+SOLUSDT,Solana,Crypto
+XRPUSDT,XRP,Crypto
+DOGEUSDT,Dogecoin,Meme
+ADAUSDT,Cardano,Crypto
+TRXUSDT,TRON,Crypto
+AVAXUSDT,Avalanche,Crypto
+LINKUSDT,Chainlink,Crypto
+DOTUSDT,Polkadot,Crypto
+TONUSDT,Toncoin,Crypto
+SHIBUSDT,Shiba Inu,Meme
+LTCUSDT,Litecoin,Crypto
+BCHUSDT,Bitcoin Cash,Crypto
+NEARUSDT,NEAR,Crypto
+UNIUSDT,Uniswap,DeFi
+XLMUSDT,Stellar,Crypto
+APTUSDT,Aptos,Crypto
+SUIUSDT,Sui,Crypto
+PEPEUSDT,Pepe,Meme
+ICPUSDT,Internet Computer,Crypto
+ETCUSDT,Ethereum Classic,Crypto
+FILUSDT,Filecoin,Crypto
+HBARUSDT,Hedera,Crypto
+ARBUSDT,Arbitrum,Crypto
+OPUSDT,Optimism,Crypto
+ATOMUSDT,Cosmos,Crypto
+INJUSDT,Injective,DeFi
+AAVEUSDT,Aave,DeFi
