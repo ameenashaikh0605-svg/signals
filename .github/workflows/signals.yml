@@ -2,7 +2,9 @@ name: Buy/Sell signals
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes, GitHub's fastest (it may start a few minutes late)
+    # GitHub only starts free scheduled runs about once an hour, so each run keeps checking
+    # every 5 minutes for ~55 minutes and the next scheduled run carries on after it.
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       test_telegram:
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 75
     env:
       TZ: Asia/Kolkata
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -33,16 +35,21 @@ jobs:
       - name: Telegram test
         if: ${{ inputs.test_telegram }}
         run: python cloud_scan.py --test-telegram
-      - name: Check the markets
-        if: ${{ !inputs.test_telegram }}
-        run: python cloud_scan.py
-      - name: Save open trades for the next run
+      - name: Check the markets every 5 minutes
         if: ${{ !inputs.test_telegram }}
         run: |
           git config user.name "signals-bot"
           git config user.email "signals-bot@users.noreply.github.com"
-          for f in cloud_state.json risk_today.json signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
-          if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
-          git commit -m "Save signal state [skip ci]"
-          for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 5; done
-          exit 1
+          end=$(( $(date +%s) + 55 * 60 ))
+          while :; do
+            python cloud_scan.py || echo "scan failed, trying again next round"
+            for f in cloud_state.json risk_today.json signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
+            if ! git diff --cached --quiet; then
+              git commit -q -m "Save signal state [skip ci]"
+              for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done
+            fi
+            # wait until 20 seconds after the next 5-minute mark, so the 5-minute candle has closed
+            now=$(date +%s); next=$(( (now / 300 + 1) * 300 + 20 ))
+            [ "$next" -ge "$end" ] && break
+            sleep $(( next - now ))
+          done
