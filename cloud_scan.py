@@ -45,7 +45,7 @@ def make_engine(cfg):
     engine = SS.Engine(cfg)
     sent = []
 
-    def alert(text):  # send now: the run ends right after, so no background threads
+    def alert(text, mode=None):  # send now: the run ends right after, so no background threads
         print("\n" + text + "\n")
         if token and chat:
             sent.append(SS.send_telegram(token, chat, text))

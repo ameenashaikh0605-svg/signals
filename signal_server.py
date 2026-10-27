@@ -477,7 +477,7 @@ class Engine:
             return  # never alert on old candles at start-up
         if it["bias_sent"] != bias and self.cfg["telegram"].get("bias_alerts") and bias in ("up", "down"):
             self.alert(f"{'🟩' if bias == 'up' else '🟥'} {it['name']}: {'uptrend' if bias == 'up' else 'downtrend'} "
-                       f"confirmed, wait for a {'BUY' if bias == 'up' else 'SELL'} setup")
+                       f"confirmed, wait for a {'BUY' if bias == 'up' else 'SELL'} setup", mode=it["mode"])
         it["bias_sent"] = bias
         if tr:
             return
@@ -529,7 +529,7 @@ class Engine:
                    + (tr["size"] + "\n" if tr.get("size") else "")
                    + "\nWhy the trend looks good:\n" + "\n".join("• " + r for r in reasons) + "\n\n"
                    + f"Candle closed {bar_time}{f' · data delayed {delay} min' if delay else ''}. "
-                   + "I'll message you when the target or stop loss is hit. Not advice.")
+                   + "I'll message you when the target or stop loss is hit. Not advice.", mode=it["mode"])
         if self.cfg["timemachine"].get("enabled", True):
             threading.Thread(target=self.time_machine, args=(it, tr, list(bars), a, dict(cfg)), daemon=True).start()
 
@@ -563,7 +563,7 @@ class Engine:
         if not self.cfg["timemachine"].get("send_message", False):
             return
         word = "BUY" if tr["side"] == 1 else "SELL"
-        self.alert(f"{it['label']}\nOdds for the {word} {it['name']} ({it['tf']}) alert above:\n{text}")
+        self.alert(f"{it['label']}\nOdds for the {word} {it['name']} ({it['tf']}) alert above:\n{text}", mode=it["mode"])
 
     def daily_supertrend(self, code, day):
         """Supertrend direction of the last finished daily candle before `day`, from the swing row's
@@ -611,7 +611,7 @@ class Engine:
             money_txt = f" · about {'+' if r >= 0 else ''}{T.money(r * pl, cur)} at the suggested size" if pl and not tr.get("blocked") else ""
             self.alert(f"{head}: {it['name']} {word}  ·  {it['label']}\n"
                        f"Entry {fmt_px(tr['entry'])} → exit {fmt_px(exit_px)}\n"
-                       f"Result {'+' if r >= 0 else ''}{r:.1f}x the risk{money_txt}")
+                       f"Result {'+' if r >= 0 else ''}{r:.1f}x the risk{money_txt}", mode=it["mode"])
 
     def near_close(self, it):
         end = it["info"].get("session_end")
@@ -621,11 +621,14 @@ class Engine:
         return time.strftime("%d %b %H:%M", time.localtime(t))
 
     # ── outputs ──
-    def alert(self, text):
+    def alert(self, text, mode="news"):
         print("\n" + text + "\n")
         if self.cfg.get("desktop_alerts") and not self.demo:
             threading.Thread(target=desktop_alert, args=(text,), daemon=True).start()
         tg = self.cfg["telegram"]
+        only = tg.get("only_modes")  # e.g. ["fast"] when GitHub sends the other alerts
+        if only and mode not in only:
+            return
         if tg.get("bot_token") and tg.get("chat_id"):
             threading.Thread(target=send_telegram, args=(tg["bot_token"], tg["chat_id"], text), daemon=True).start()
 
