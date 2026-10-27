@@ -1,0 +1,96 @@
+{
+ "last_day": "2026-10-26",
+ "last_run": "2026-10-27 23:22:56",
+ "rows": {
+  "AAVEUSDT": {
+   "last_t": 1792972800
+  },
+  "ADAUSDT": {
+   "last_t": 1792972800
+  },
+  "APTUSDT": {
+   "last_t": 1792972800
+  },
+  "ARBUSDT": {
+   "last_t": 1792972800
+  },
+  "ATOMUSDT": {
+   "last_t": 1792972800
+  },
+  "AVAXUSDT": {
+   "last_t": 1792972800
+  },
+  "BCHUSDT": {
+   "last_t": 1792972800
+  },
+  "BNBUSDT": {
+   "last_t": 1792972800
+  },
+  "BTCUSDT": {
+   "last_t": 1792972800
+  },
+  "DOGEUSDT": {
+   "last_t": 1792972800
+  },
+  "DOTUSDT": {
+   "last_t": 1792972800
+  },
+  "ETCUSDT": {
+   "last_t": 1792972800
+  },
+  "ETHUSDT": {
+   "last_t": 1792972800
+  },
+  "FILUSDT": {
+   "last_t": 1792972800
+  },
+  "HBARUSDT": {
+   "last_t": 1792972800
+  },
+  "ICPUSDT": {
+   "last_t": 1792972800
+  },
+  "INJUSDT": {
+   "last_t": 1792972800
+  },
+  "LINKUSDT": {
+   "last_t": 1792972800
+  },
+  "LTCUSDT": {
+   "last_t": 1792972800
+  },
+  "NEARUSDT": {
+   "last_t": 1792972800
+  },
+  "OPUSDT": {
+   "last_t": 1792972800
+  },
+  "PEPEUSDT": {
+   "last_t": 1792972800
+  },
+  "SHIBUSDT": {
+   "last_t": 1792972800
+  },
+  "SOLUSDT": {
+   "last_t": 1792972800
+  },
+  "SUIUSDT": {
+   "last_t": 1792972800
+  },
+  "TONUSDT": {
+   "last_t": 1782777600
+  },
+  "TRXUSDT": {
+   "last_t": 1792972800
+  },
+  "UNIUSDT": {
+   "last_t": 1792972800
+  },
+  "XLMUSDT": {
+   "last_t": 1792972800
+  },
+  "XRPUSDT": {
+   "last_t": 1792972800
+  }
+ }
+}
