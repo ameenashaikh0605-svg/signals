@@ -1,6 +1,6 @@
 # Buy/Sell signals (cloud)
 
-Runs the signal program every 15 minutes on GitHub, so Telegram alerts keep coming with the laptop off.
+Runs the signal program every 5 minutes on GitHub, so Telegram alerts keep coming with the laptop off.
 Read-only: it only reads market prices and news, and never places orders.
 
 - **What it sends:** 📅 swing (daily) and ⚡ intraday (15-minute) signals with entry, stop loss, target, lot size and

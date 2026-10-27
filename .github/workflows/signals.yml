@@ -2,7 +2,7 @@ name: Buy/Sell signals
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may start it a few minutes late)
+    - cron: "*/5 * * * *"   # every 5 minutes, GitHub's fastest (it may start a few minutes late)
   workflow_dispatch:
     inputs:
       test_telegram:
