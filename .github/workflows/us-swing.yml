@@ -1,0 +1,49 @@
+name: US swing signals
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"   # after the US close (Mon-Fri), about 3 am India time; GitHub may start it late
+  workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: "Only send a Telegram test message"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-swing
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TZ: Asia/Kolkata
+      US_TELEGRAM_BOT_TOKEN: ${{ secrets.US_TELEGRAM_BOT_TOKEN }}
+      US_TELEGRAM_CHAT_ID: ${{ secrets.US_TELEGRAM_CHAT_ID }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Telegram test
+        if: ${{ inputs.test_telegram }}
+        run: python us_swing.py --test-telegram
+      - name: Check S&P 500 stocks
+        if: ${{ !inputs.test_telegram }}
+        run: python us_swing.py
+      - name: Save open trades for the next run
+        if: ${{ !inputs.test_telegram }}
+        run: |
+          git config user.name "signals-bot"
+          git config user.email "signals-bot@users.noreply.github.com"
+          for f in us_state.json us_signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
+          if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
+          git commit -q -m "Save US swing state [skip ci]"
+          for i in 1 2 3 4 5; do git pull --rebase -q && git push -q && exit 0; sleep 7; done
+          exit 1
