@@ -41,7 +41,7 @@ jobs:
         run: |
           git config user.name "signals-bot"
           git config user.email "signals-bot@users.noreply.github.com"
-          git add cloud_state.json risk_today.json signals_log.csv 2>/dev/null || true
+          for f in cloud_state.json risk_today.json signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
           if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
           git commit -m "Save signal state [skip ci]"
           for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 5; done
