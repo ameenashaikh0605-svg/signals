@@ -45,12 +45,13 @@ jobs:
           end=$(( $(date +%s) + 345 * 60 ))
           while :; do
             python cloud_scan.py || echo "scan failed, trying again next round"
-            # every 30 minutes: live US swing check (only does anything while the US market is open)
+            # every 30 minutes: live swing checks (entry / target / stop alerts); US only while its market is open
             if [ $(( 10#$(date +%M) % 30 )) -lt 5 ]; then
               git pull --rebase --autostash -q || git rebase --abort || true   # pick up the after-close run's US state first
               python swing_scan.py us --live || echo "US live check failed"
+              python swing_scan.py crypto --live || echo "crypto live check failed"
             fi
-            for f in cloud_state.json risk_today.json signals_log.csv us_state.json; do [ -f "$f" ] && git add "$f"; done; true
+            for f in cloud_state.json risk_today.json signals_log.csv us_state.json crypto_state.json; do [ -f "$f" ] && git add "$f"; done; true
             if ! git diff --cached --quiet; then
               git commit -q -m "Save signal state [skip ci]"
               for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done

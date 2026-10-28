@@ -3,9 +3,13 @@
     python swing_scan.py us       S&P 500 stocks (us_stocks.csv), after each US close, buys only
     python swing_scan.py crypto   top coins (crypto_coins.csv), after each daily close (00:00 UTC), buys and sells
 
-Rule (same as the swing mode in signal_server.py): BUY when the daily Supertrend turns up while price is
-above its 200-day average (SELL: turns down while below it). Stop loss 1.5 ATR from entry, then a trailing
-stop 3 ATR from the best close. Open trades are kept in <market>_state.json.
+Setup (same rule as the swing mode in signal_server.py): the daily Supertrend turns up while price is above
+its 200-day average (SELL: turns down while below it). Each setup is sent in two steps:
+  1. GET READY: buy above that day's high (sell below its low), valid for the next SETUP_DAYS days.
+  2. ENTRY TRIGGERED when price crosses that level. Stop loss 1.5 ATR from the trigger, target at 2x the
+     risk (book some profit), then the stop trails 3 ATR from the best close for the rest.
+`--live` (run every 30 minutes) sends entry / target / stop alerts as they happen; the daily summary confirms
+them. Setups and open trades are kept in <market>_state.json.
 
 Telegram details come from the environment (<MARKET>_TELEGRAM_BOT_TOKEN, and <MARKET>_TELEGRAM_CHAT_ID or
 TELEGRAM_CHAT_ID), never from files. Read-only: it never places orders."""
@@ -24,6 +28,7 @@ import strategy as S
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATCH_UP_DAYS = 5      # after a gap, only act on the last few daily candles (no alert floods)
 MAX_DETAILED = 15      # new signals shown in full; the rest are listed by name
+SETUP_DAYS = 3         # a GET READY setup expires if price doesn't cross the trigger within this many days
 CFG = dict(S.DEFAULTS)
 
 MARKETS = {
@@ -91,13 +96,13 @@ def yahoo_daily(symbol, live=False):
     return bars
 
 
-def binance_daily(symbol):
-    """Closed daily candles (UTC days), about 2 years."""
+def binance_daily(symbol, live=False):
+    """Closed daily candles (UTC days), about 2 years. live=True keeps today's forming candle."""
     rows = retry(lambda: SS.BinanceSource()._get(f"/klines?symbol={symbol}&interval=1d&limit=800"))
     now_ms = int(time.time() * 1000)
     return [{"t": r[0] // 1000, "o": float(r[1]), "h": float(r[2]), "l": float(r[3]), "c": float(r[4]),
              "v": float(r[5]), "day": datetime.fromtimestamp(r[0] // 1000, tz=timezone.utc).strftime("%Y-%m-%d")}
-            for r in rows if r[6] < now_ms]
+            for r in rows if live or r[6] < now_ms]
 
 
 def reasons(ind, i, side):
@@ -118,6 +123,10 @@ def px(x):
     return f"${x:.{max(4, 3 - int(f'{x:e}'.split('e')[1]))}f}".rstrip("0")
 
 
+def target_of(tr):
+    return tr.get("target") or tr["entry"] + tr.get("side", 1) * CFG["target_r"] * tr["risk"]
+
+
 def step(stock, bars, row, first, events, sides):
     """Walk through every daily candle closed since the last run. Updates `row` and appends to `events`."""
     sym = stock["symbol"]
@@ -133,33 +142,54 @@ def step(stock, bars, row, first, events, sides):
         return
     ind = S.indicators(bars, CFG)
     ind["v"] = [b["v"] or 0.0 for b in bars]
+    base = {"symbol": sym, "name": stock["name"], "sector": stock.get("sector", "")}
     for j in todo:
         b, a = bars[j], ind["atr"][j]
-        tr = row.get("trade")
+        tr, pend = row.get("trade"), row.get("pending")
         if tr:
             side = tr.get("side", 1)
             if (side == 1 and b["l"] <= tr["stop"]) or (side == -1 and b["h"] >= tr["stop"]):
                 exit_px = min(b["o"], tr["stop"]) if side == 1 else max(b["o"], tr["stop"])  # gaps fill at the open
                 r = side * (exit_px - tr["entry"]) / tr["risk"] if tr["risk"] else 0
-                events.append({"kind": "exit", "symbol": sym, "name": stock["name"], "side": side,
-                               "entry": tr["entry"], "exit": exit_px, "r": r,
-                               "trail": side * (tr["stop"] - tr["entry"]) > 0, "day": b["day"],
-                               "days": len([x for x in bars if tr["day"] < x["day"] <= b["day"]])})
+                events.append(dict(base, kind="exit", side=side, entry=tr["entry"], exit=exit_px, r=r,
+                                   trail=side * (tr["stop"] - tr["entry"]) > 0, day=b["day"],
+                                   days=len([x for x in bars if tr["day"] < x["day"] <= b["day"]])))
                 row["trade"] = None
                 continue
+            tgt = target_of(tr)
+            if not tr.get("target_hit") and ((side == 1 and b["h"] >= tgt) or (side == -1 and b["l"] <= tgt)):
+                tr["target_hit"] = True
+                events.append(dict(base, kind="target", side=side, entry=tr["entry"], target=tgt, day=b["day"]))
             tr["best"] = max(tr["best"], b["c"]) if side == 1 else min(tr["best"], b["c"])
             trail = tr["best"] - side * CFG["trail_atr"] * a
             tr["stop"] = max(tr["stop"], trail) if side == 1 else min(tr["stop"], trail)
             continue
+        if pend:
+            side = pend["side"]
+            if (side == 1 and b["h"] >= pend["trigger"]) or (side == -1 and b["l"] <= pend["trigger"]):
+                entry = max(b["o"], pend["trigger"]) if side == 1 else min(b["o"], pend["trigger"])  # gap: open
+                stop = entry - side * pend["risk"]
+                row["trade"] = {"side": side, "entry": entry, "stop": stop, "risk": pend["risk"], "best": entry,
+                                "day": b["day"], "target": entry + side * CFG["target_r"] * pend["risk"]}
+                row["pending"] = None
+                events.append(dict(base, kind="entry", side=side, entry=entry, stop=stop,
+                                   target=row["trade"]["target"], day=b["day"]))
+                continue
+            pend["waited"] = pend.get("waited", 0) + 1
+            if pend["waited"] >= SETUP_DAYS:
+                row["pending"] = None
+                events.append(dict(base, kind="expired", side=side, trigger=pend["trigger"], day=b["day"]))
+            else:
+                continue
         side, why = S.signal_at(bars, ind, j, CFG, "supertrend", False)
         if side not in sides:
             continue
-        entry = b["c"]
-        stop, _, risk = S.levels(entry, side, a, CFG)
-        row["trade"] = {"side": side, "entry": entry, "stop": stop, "risk": risk, "best": entry, "day": b["day"]}
-        events.append({"kind": "signal", "symbol": sym, "name": stock["name"], "sector": stock.get("sector", ""),
-                       "side": side, "entry": entry, "stop": stop, "risk": risk, "adx": ind["adx"][j],
-                       "day": b["day"], "why": reasons(ind, j, side)})
+        trigger = b["h"] if side == 1 else b["l"]
+        risk = CFG["stop_atr"] * a
+        row["pending"] = {"side": side, "trigger": trigger, "risk": risk, "day": b["day"], "waited": 0}
+        events.append(dict(base, kind="setup", side=side, trigger=trigger, stop=trigger - side * risk,
+                           target=trigger + side * CFG["target_r"] * risk, risk=risk, adx=ind["adx"][j],
+                           day=b["day"], why=reasons(ind, j, side)))
     row["last_t"] = bars[-1]["t"]
 
 
@@ -172,43 +202,61 @@ def qty(x):
     return f"{x:,.0f}" if x >= 100 else f"{x:.2f}" if x >= 0.01 else f"{x:.6f}"
 
 
+def setup_text(m, e, risk_usd):
+    side = e["side"]
+    word = "buy above" if side == 1 else "sell/short below"
+    pct = lambda x: abs(x - e["trigger"]) / e["trigger"] * 100
+    return (f"{e['symbol']} · {e['name']}" + (f" ({e['sector']})" if e.get("sector") else "") + "\n"
+            f"▶ Entry: {word} {px(e['trigger'])} ({'today\'s high' if side == 1 else 'today\'s low'})\n"
+            f"🛑 Stop loss: {px(e['stop'])} ({pct(e['stop']):.1f}% {'below' if side == 1 else 'above'} entry)\n"
+            f"🎯 Target: {px(e['target'])} ({pct(e['target']):.1f}%, 2x the risk)\n"
+            f"💰 {qty(size(e['trigger'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
+            f"Why: " + "; ".join(e["why"]))
+
+
+def trade_line(e):
+    word = "BUY" if e["side"] == 1 else "SELL"
+    return (f"{e['symbol']} {word} at {px(e['entry'])} · 🛑 stop {px(e['stop'])} · 🎯 target {px(e['target'])}")
+
+
 def messages(m, events, open_trades, checked, failed, day, risk_usd):
-    sig = sorted([e for e in events if e["kind"] == "signal"], key=lambda e: -e["adx"])
-    exits = [e for e in events if e["kind"] == "exit"]
+    by = lambda k: [e for e in events if e["kind"] == k]
+    setups = sorted(by("setup"), key=lambda e: -e["adx"])
     when = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b") if day else "today"
     head = f"{m['title']} · {when} daily close\nChecked {checked} {m['what']}"
     if failed:
         head += f" ({failed} could not be loaded)"
     parts = [head]
-    for side, title in ((1, "🟢 NEW BUYS"), (-1, "🔴 NEW SELLS")):
-        group = [e for e in sig if e["side"] == side]
-        if not group:
-            continue
-        lines = [f"{title} ({len(group)}), strongest trend first:"]
-        for n, e in enumerate(group[:MAX_DETAILED], 1):
-            word = "Buy" if side == 1 else "Sell/short"
-            gap = abs(e["entry"] - e["stop"]) / e["entry"] * 100
-            lines.append(f"\n{n}. {e['symbol']} · {e['name']} ({e['sector']})\n"
-                         f"▶ Entry: {word.lower()} near {px(e['entry'])}\n"
-                         f"🛑 Stop loss: {px(e['stop'])} ({gap:.1f}% {'below' if side == 1 else 'above'} entry)\n"
-                         f"💰 {qty(size(e['entry'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
-                         f"Why: " + "; ".join(e["why"]))
-        if len(group) > MAX_DETAILED:
-            lines.append("\nAlso turned: " + ", ".join(e["symbol"] for e in group[MAX_DETAILED:]))
-        parts.append("\n".join(lines))
-    if sig:
-        parts.append("No fixed target: the stop follows price. I'll tell you when a stop is hit.")
-    else:
-        parts.append("No new setups today.")
-    if exits:
-        lines = ["🔔 STOPS HIT (close these if you hold them):"]
-        for e in exits:
+    if by("entry"):
+        parts.append("✅ ENTRIES TRIGGERED:\n" + "\n".join(trade_line(e) for e in by("entry")))
+    if by("target"):
+        parts.append("🎯 TARGET HIT (book some profit; the stop now trails for the rest):\n" + "\n".join(
+            f"{e['symbol']}: {px(e['entry'])} → {px(e['target'])} "
+            f"({e['side'] * (e['target'] / e['entry'] - 1) * 100:+.1f}%)" for e in by("target")))
+    if by("exit"):
+        lines = ["🔔 STOP LOSS HIT (close these if you hold them):"]
+        for e in by("exit"):
             icon = "🔒" if e["trail"] else "❌"
             word = "BUY" if e["side"] == 1 else "SELL"
             lines.append(f"{icon} {e['symbol']} {word}: {px(e['entry'])} → {px(e['exit'])} · "
                          f"{'+' if e['r'] >= 0 else ''}{e['r']:.1f}x the risk "
                          f"({e['side'] * (e['exit'] / e['entry'] - 1) * 100:+.1f}%) after {e['days']} days")
         parts.append("\n".join(lines))
+    for side, title in ((1, "🟡 GET READY TO BUY"), (-1, "🟡 GET READY TO SELL")):
+        group = [e for e in setups if e["side"] == side]
+        if not group:
+            continue
+        lines = [f"{title} ({len(group)}), strongest trend first. Don't buy yet: enter only if price crosses "
+                 f"the entry level in the next {SETUP_DAYS} days. I'll message you when it does."]
+        lines += [f"\n{n}. " + setup_text(m, e, risk_usd) for n, e in enumerate(group[:MAX_DETAILED], 1)]
+        if len(group) > MAX_DETAILED:
+            lines.append("\nAlso set up: " + ", ".join(e["symbol"] for e in group[MAX_DETAILED:]))
+        parts.append("\n".join(lines))
+    if by("expired"):
+        parts.append("⌛ Setups cancelled (price never reached the entry): "
+                     + ", ".join(e["symbol"] for e in by("expired")))
+    if not any(by(k) for k in ("setup", "entry", "target", "exit")):
+        parts.append("Nothing new today.")
     if open_trades:
         parts.append(f"📂 Open swing trades: {len(open_trades)} · " + ", ".join(sorted(open_trades)[:40])
                      + (" …" if len(open_trades) > 40 else ""))
@@ -237,11 +285,18 @@ def write_log(path, events):
         if new:
             w.writerow(["day", "kind", "symbol", "entry", "stop_or_exit", "r"])
         for e in events:
-            if e["kind"] == "signal":
-                w.writerow([e["day"], "BUY" if e["side"] == 1 else "SELL", e["symbol"], round(e["entry"], 8),
-                            round(e["stop"], 8), ""])
-            else:
+            word = "BUY" if e["side"] == 1 else "SELL"
+            if e["kind"] == "setup":
+                w.writerow([e["day"], f"SETUP {word}", e["symbol"], round(e["trigger"], 8), round(e["stop"], 8), ""])
+            elif e["kind"] == "entry":
+                w.writerow([e["day"], f"ENTRY {word}", e["symbol"], round(e["entry"], 8), round(e["stop"], 8), ""])
+            elif e["kind"] == "target":
+                w.writerow([e["day"], "TARGET", e["symbol"], round(e["entry"], 8), round(e["target"], 8),
+                            CFG["target_r"]])
+            elif e["kind"] == "exit":
                 w.writerow([e["day"], "EXIT", e["symbol"], round(e["entry"], 8), round(e["exit"], 8), round(e["r"], 2)])
+            else:
+                w.writerow([e["day"], "EXPIRED", e["symbol"], round(e["trigger"], 8), "", ""])
 
 
 def send(m, texts):
@@ -262,68 +317,77 @@ def us_market_open():
 
 
 def live_pass(key, m, risk_usd):
-    """During US market hours: alert right away when an open trade's stop is hit, and when a stock's
-    daily Supertrend is turning up on today's price (an early BUY, confirmed or cancelled at the close).
-    Each stock alerts at most once per day for each kind. The after-close summary still runs as before."""
-    is_open, today = us_market_open()
-    if not is_open:
-        print("US market closed: no live check.")
-        return
+    """Every 30 minutes: alert right away when a GET READY setup's entry level is crossed, when an open
+    trade reaches its target, and when it breaks its stop. Each alert is sent once; the daily summary
+    then records them. US: only while the market is open. Crypto: around the clock."""
+    if key == "us":
+        is_open, today = us_market_open()
+        if not is_open:
+            print("US market closed: no live check.")
+            return
+    else:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     state_path = os.path.join(HERE, f"{key}_state.json")
     state = load_state(state_path)
     rows = state.get("rows") or {}
-    if not rows:
+    watch = {s for s, r in rows.items() if r.get("trade") or r.get("pending")}
+    if not watch:
+        print("Live check: no setups or trades to watch.")
         return
-    items = load_list(m)
+    items = [it for it in load_list(m) if it["symbol"] in watch]
+    loader = yahoo_daily if m["source"] == "yahoo" else binance_daily
 
     def fetch(item):
         try:
-            return item, yahoo_daily(item["symbol"], live=True)
+            return item, loader(item["symbol"], live=True)
         except Exception:
             return item, None
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(fetch, items))
-    early, stops = [], []
+    entries, targets, stops = [], [], []
     for it, bars in results:
-        row = rows.get(it["symbol"])
-        if not bars or row is None or bars[-1]["day"] != today or len(bars) <= CFG["ema_trend"] + 2:
+        row = rows[it["symbol"]]
+        if not bars or bars[-1]["day"] != today:
             continue
-        b, tr = bars[-1], row.get("trade")
+        b, tr, pend = bars[-1], row.get("trade"), row.get("pending")
+        name = f"{it['symbol']} · {it['name']}"
         if tr:
-            if b["l"] <= tr["stop"] and row.get("stop_alert_day") != today:
-                row["stop_alert_day"] = today
-                stops.append(f"❌ {it['symbol']} · {it['name']}: price {px(b['c'])} broke the stop {px(tr['stop'])} "
-                             f"(bought {px(tr['entry'])}, {(b['c'] / tr['entry'] - 1) * 100:+.1f}%)")
-            continue
-        if row.get("early_day") == today:
-            continue
-        ind = S.indicators(bars, CFG)
-        ind["v"] = [x["v"] or 0.0 for x in bars]
-        i = len(bars) - 1
-        side, _ = S.signal_at(bars, ind, i, CFG, "supertrend", False)
-        if side != 1:
-            continue
-        row["early_day"] = today
-        stop, _, _ = S.levels(b["c"], 1, ind["atr"][i], CFG)
-        early.append((ind["adx"][i], f"{it['symbol']} · {it['name']}\n▶ Entry: buy near {px(b['c'])} (price now)\n"
-                      f"🛑 Stop loss: {px(stop)} ({(b['c'] - stop) / b['c'] * 100:.1f}% below entry)\n"
-                      f"💰 {qty(size(b['c'], stop, risk_usd))} shares "
-                      f"risks about ${risk_usd:g}\nWhy: " + "; ".join(reasons(ind, i, 1)[1:] or ["trend turning up"])))
+            side = tr.get("side", 1)
+            word = "bought" if side == 1 else "sold"
+            if (side == 1 and b["l"] <= tr["stop"]) or (side == -1 and b["h"] >= tr["stop"]):
+                if tr.get("stop_alert_day") == today:
+                    continue
+                tr["stop_alert_day"] = today
+                stops.append(f"{'🔒' if side * (tr['stop'] - tr['entry']) > 0 else '❌'} {name}: price "
+                             f"{px(b['c'])} broke the stop {px(tr['stop'])} ({word} at {px(tr['entry'])}, "
+                             f"{side * (tr['stop'] / tr['entry'] - 1) * 100:+.1f}% at the stop)")
+            elif not tr.get("target_alerted"):
+                tgt = target_of(tr)
+                if (side == 1 and b["h"] >= tgt) or (side == -1 and b["l"] <= tgt):
+                    tr["target_alerted"] = True
+                    targets.append(f"🎯 {name}: reached the target {px(tgt)} ({word} at {px(tr['entry'])}, "
+                                   f"{side * (tgt / tr['entry'] - 1) * 100:+.1f}%). Book some profit; "
+                                   f"keep the rest with the stop at {px(tr['stop'])}.")
+        elif pend and pend.get("alert_day") != today and pend["day"] < today:
+            side = pend["side"]
+            if (side == 1 and b["h"] >= pend["trigger"]) or (side == -1 and b["l"] <= pend["trigger"]):
+                pend["alert_day"] = today
+                stop = pend["trigger"] - side * pend["risk"]
+                tgt = pend["trigger"] + side * CFG["target_r"] * pend["risk"]
+                entries.append(f"✅ {name}: {'BUY' if side == 1 else 'SELL'} triggered at {px(pend['trigger'])} "
+                               f"(price now {px(b['c'])})\n🛑 Stop loss {px(stop)} · 🎯 Target {px(tgt)} · 💰 "
+                               f"{qty(size(pend['trigger'], stop, risk_usd))} {m['unit']} risks about ${risk_usd:g}")
     parts = []
+    if entries:
+        parts.append("✅ ENTRY TRIGGERED, enter now:\n\n" + "\n\n".join(entries))
+    if targets:
+        parts.append("🎯 TARGET HIT:\n" + "\n".join(targets))
     if stops:
-        parts.append("🔔 STOP LOSS HIT NOW (sell if you hold it):\n" + "\n".join(stops))
-    if early:
-        early.sort(key=lambda x: -x[0])
-        parts.append(f"🟡 EARLY BUY SETUPS ({len(early)}): the daily Supertrend is turning up on today's price, "
-                     "above the 200-day average. Not confirmed until the close: it can still fail if price drops "
-                     "back. Tonight's summary confirms or cancels each one.\n\n"
-                     + "\n\n".join(f"{n}. {t}" for n, (_, t) in enumerate(early[:MAX_DETAILED], 1))
-                     + (f"\n\nAlso turning up: " + ", ".join(t.split(" ·")[0] for _, t in early[MAX_DETAILED:])
-                        if len(early) > MAX_DETAILED else ""))
+        parts.append("🔔 STOP LOSS HIT, exit now:\n" + "\n".join(stops))
     if parts:
-        now_et = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
-        send(m, split(f"{m['title']} · LIVE {now_et} India time\n\n" + "\n\n".join(parts) + "\n\nNot advice."))
+        now = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
+        send(m, split(f"{m['title']} · LIVE {now} India time\n\n" + "\n\n".join(parts) + "\n\nNot advice."))
     else:
         print("Live check: nothing new.")
     save_state(state_path, state)
@@ -338,7 +402,7 @@ def main():
         return live_pass(key, m, risk_usd)
     if "--test-telegram" in sys.argv:
         ok = send(m, [f"✅ {m['title']} alerts connected. {m['when'][0].upper() + m['when'][1:]} you'll get one summary here: "
-                      f"new swing setups in {m['what']} and any stop losses hit."])
+                      f"new setups in {m['what']}, then entry, target and stop-loss alerts."])
         sys.exit(0 if ok else 1)
     state_path = os.path.join(HERE, f"{key}_state.json")
     log_path = os.path.join(HERE, f"{key}_signals_log.csv")
@@ -370,15 +434,10 @@ def main():
     checked = len(items) - len(failed)
     if first:
         send(m, [f"{m['title']} scanner is set up: {checked} {m['what']} loaded. "
-                 f"From the next daily close you'll get one summary a day with new setups and stops hit."])
+                 f"From the next daily close you'll get one summary a day with new setups, entries, targets and stops."])
     elif latest and latest != state.get("last_day"):
         write_log(log_path, events)
-        texts = messages(m, events, open_trades, checked, len(failed), latest, risk_usd)
-        confirmed = {e["symbol"] for e in events if e["kind"] == "signal"}
-        failed_early = sorted(s for s, r in rows.items() if r.get("early_day") == latest and s not in confirmed)
-        if failed_early:
-            texts[-1] += "\n\n🚫 Early setups that did NOT confirm at the close (skip them): " + ", ".join(failed_early)
-        if not send(m, texts):
+        if not send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd)):
             print("telegram send failed")
     else:
         print("No new daily candle since the last run: nothing sent.")
