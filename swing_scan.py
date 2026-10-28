@@ -65,8 +65,9 @@ def retry(fn):
     raise RuntimeError(str(last))
 
 
-def yahoo_daily(symbol):
-    """Closed daily candles. Today's candle counts once the regular session has ended."""
+def yahoo_daily(symbol, live=False):
+    """Closed daily candles. Today's candle counts once the regular session has ended.
+    live=True keeps today's still-forming candle at the end (its close is the latest price)."""
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}"
            f"?interval=1d&range=2y&includePrePost=false")
     res = retry(lambda: SS.http_json(url)["chart"]["result"][0])
@@ -85,7 +86,7 @@ def yahoo_daily(symbol):
                      "day": day})
     # the candle of the current session is still forming until that session ends
     end_day = datetime.fromtimestamp(end + off, tz=timezone.utc).strftime("%Y-%m-%d") if end else ""
-    if bars and time.time() < end and bars[-1]["day"] >= end_day:
+    if bars and time.time() < end and bars[-1]["day"] >= end_day and not live:
         bars.pop()
     return bars
 
@@ -254,11 +255,86 @@ def send(m, texts):
     return all(SS.send_telegram(token, chat, t) for t in texts)
 
 
+def us_market_open():
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return now.weekday() < 5 and (9, 45) <= (now.hour, now.minute) < (16, 0), now.strftime("%Y-%m-%d")
+
+
+def live_pass(key, m, risk_usd):
+    """During US market hours: alert right away when an open trade's stop is hit, and when a stock's
+    daily Supertrend is turning up on today's price (an early BUY, confirmed or cancelled at the close).
+    Each stock alerts at most once per day for each kind. The after-close summary still runs as before."""
+    is_open, today = us_market_open()
+    if not is_open:
+        print("US market closed: no live check.")
+        return
+    state_path = os.path.join(HERE, f"{key}_state.json")
+    state = load_state(state_path)
+    rows = state.get("rows") or {}
+    if not rows:
+        return
+    items = load_list(m)
+
+    def fetch(item):
+        try:
+            return item, yahoo_daily(item["symbol"], live=True)
+        except Exception:
+            return item, None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(fetch, items))
+    early, stops = [], []
+    for it, bars in results:
+        row = rows.get(it["symbol"])
+        if not bars or row is None or bars[-1]["day"] != today or len(bars) <= CFG["ema_trend"] + 2:
+            continue
+        b, tr = bars[-1], row.get("trade")
+        if tr:
+            if b["l"] <= tr["stop"] and row.get("stop_alert_day") != today:
+                row["stop_alert_day"] = today
+                stops.append(f"❌ {it['symbol']} · {it['name']}: price {px(b['c'])} broke the stop {px(tr['stop'])} "
+                             f"(bought {px(tr['entry'])}, {(b['c'] / tr['entry'] - 1) * 100:+.1f}%)")
+            continue
+        if row.get("early_day") == today:
+            continue
+        ind = S.indicators(bars, CFG)
+        ind["v"] = [x["v"] or 0.0 for x in bars]
+        i = len(bars) - 1
+        side, _ = S.signal_at(bars, ind, i, CFG, "supertrend", False)
+        if side != 1:
+            continue
+        row["early_day"] = today
+        stop, _, _ = S.levels(b["c"], 1, ind["atr"][i], CFG)
+        early.append((ind["adx"][i], f"{it['symbol']} · {it['name']}\n▶ Now {px(b['c'])}  🛑 Stop {px(stop)} "
+                      f"({(b['c'] - stop) / b['c'] * 100:.1f}% below)  💰 {qty(size(b['c'], stop, risk_usd))} shares "
+                      f"risks about ${risk_usd:g}\nWhy: " + "; ".join(reasons(ind, i, 1)[1:] or ["trend turning up"])))
+    parts = []
+    if stops:
+        parts.append("🔔 STOP LOSS HIT NOW (sell if you hold it):\n" + "\n".join(stops))
+    if early:
+        early.sort(key=lambda x: -x[0])
+        parts.append(f"🟡 EARLY BUY SETUPS ({len(early)}): the daily Supertrend is turning up on today's price, "
+                     "above the 200-day average. Not confirmed until the close: it can still fail if price drops "
+                     "back. Tonight's summary confirms or cancels each one.\n\n"
+                     + "\n\n".join(f"{n}. {t}" for n, (_, t) in enumerate(early[:MAX_DETAILED], 1))
+                     + (f"\n\nAlso turning up: " + ", ".join(t.split(" ·")[0] for _, t in early[MAX_DETAILED:])
+                        if len(early) > MAX_DETAILED else ""))
+    if parts:
+        now_et = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
+        send(m, split(f"{m['title']} · LIVE {now_et} India time\n\n" + "\n\n".join(parts) + "\n\nNot advice."))
+    else:
+        print("Live check: nothing new.")
+    save_state(state_path, state)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     key = args[0] if args else "us"
     m = MARKETS[key]
     risk_usd = float(os.environ.get(f"{m['env']}_RISK_PER_TRADE_USD") or 12)   # about ₹1000 per trade
+    if "--live" in sys.argv:
+        return live_pass(key, m, risk_usd)
     if "--test-telegram" in sys.argv:
         ok = send(m, [f"✅ {m['title']} alerts connected. {m['when'][0].upper() + m['when'][1:]} you'll get one summary here: "
                       f"new swing setups in {m['what']} and any stop losses hit."])
@@ -296,7 +372,12 @@ def main():
                  f"From the next daily close you'll get one summary a day with new setups and stops hit."])
     elif latest and latest != state.get("last_day"):
         write_log(log_path, events)
-        if not send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd)):
+        texts = messages(m, events, open_trades, checked, len(failed), latest, risk_usd)
+        confirmed = {e["symbol"] for e in events if e["kind"] == "signal"}
+        failed_early = sorted(s for s, r in rows.items() if r.get("early_day") == latest and s not in confirmed)
+        if failed_early:
+            texts[-1] += "\n\n🚫 Early setups that did NOT confirm at the close (skip them): " + ", ".join(failed_early)
+        if not send(m, texts):
             print("telegram send failed")
     else:
         print("No new daily candle since the last run: nothing sent.")

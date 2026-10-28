@@ -27,6 +27,7 @@ jobs:
       TZ: Asia/Kolkata
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      US_TELEGRAM_BOT_TOKEN: ${{ secrets.US_TELEGRAM_BOT_TOKEN }}
       CRYPTO_TELEGRAM_BOT_TOKEN: ${{ secrets.CRYPTO_TELEGRAM_BOT_TOKEN }}   # only checked for being set
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +45,12 @@ jobs:
           end=$(( $(date +%s) + 345 * 60 ))
           while :; do
             python cloud_scan.py || echo "scan failed, trying again next round"
-            for f in cloud_state.json risk_today.json signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
+            # every 30 minutes: live US swing check (only does anything while the US market is open)
+            if [ $(( 10#$(date +%M) % 30 )) -lt 5 ]; then
+              git pull --rebase -q || git rebase --abort || true   # pick up the after-close run's US state first
+              python swing_scan.py us --live || echo "US live check failed"
+            fi
+            for f in cloud_state.json risk_today.json signals_log.csv us_state.json; do [ -f "$f" ] && git add "$f"; done; true
             if ! git diff --cached --quiet; then
               git commit -q -m "Save signal state [skip ci]"
               for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done
