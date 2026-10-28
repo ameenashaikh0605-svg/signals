@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -143,6 +144,133 @@ def binance_since(symbol, since_t):
     return {"h": max(float(r[2]) for r in rows), "l": min(float(r[3]) for r in rows), "c": float(rows[-1][4])}
 
 
+def swings(bars, i, kind, lookback=250, w=5):
+    """Swing lows (kind='l') or highs ('h') before bar i: (index, price), oldest first."""
+    out = []
+    for k in range(max(w, i - lookback), i - w + 1):
+        v = bars[k][kind]
+        win = [bars[x][kind] for x in range(k - w, min(k + w + 1, i + 1))]
+        if v == (min(win) if kind == "l" else max(win)):
+            out.append((k, v))
+    return out
+
+
+def checklist(bars, ind, i, side, trigger, risk):
+    """Every factor behind a setup as (mark, text). ✓ supports the trade, ✗ doesn't, ⚠️ is a warning.
+    The first two are the rule itself; the rest are extra checks used to rank setups."""
+    up = side == 1
+    d = "up" if up else "down"
+    a, c = ind["atr"][i], bars[i]["c"]
+    out = [("✓", f"Supertrend turned {d}"),
+           ("✓", f"price {'above' if up else 'below'} its 200-day average")]
+    td = S.trend_dir(ind, i) == side
+    out.append(("✓" if td else "✗", f"20 and 50-day averages {'point ' + d if td else 'not lined up yet'}"))
+    adx = ind["adx"][i]
+    out.append(("✓" if adx >= CFG["adx_min"] else "✗",
+                f"{'strong trend' if adx >= CFG['adx_min'] else 'weak/choppy trend'} (ADX {adx:.0f})"))
+    if ind["has_vol"] and ind["vavg"][i - 1]:
+        vr = ind["v"][i] / ind["vavg"][i - 1]
+        out.append(("✓" if vr >= 1.2 else "✗", f"volume {vr:.1f}x normal"))
+    # support: did the recent low (high for sells) bounce off an earlier swing low (high)?
+    kind = "l" if up else "h"
+    recent = range(max(0, i - 15), i + 1)
+    r_idx = (min if up else max)(recent, key=lambda k: bars[k][kind])
+    lvl = bars[r_idx][kind]
+    # an earlier swing low 10-120 candles before, within half a normal day's move of the recent low
+    held = [(k, v) for k, v in swings(bars, r_idx - 10, kind, 110) if abs(v - lvl) <= 0.5 * a]
+    moved = (c - lvl) * side >= a
+    if held and moved:
+        k, v = held[-1]
+        out.append(("✓", f"bounced off an earlier low near {px(v)} ({bars[k]['day'][:10]}): buyers defended it"
+                    if up else f"turned down at an earlier high near {px(v)} ({bars[k]['day'][:10]}): "
+                               f"sellers defended it"))
+    else:
+        out.append(("✗", f"no bounce off an earlier {'support' if up else 'resistance'} level"))
+    # room: is there an old high (low) in the way before the target?
+    other = "h" if up else "l"
+    target = trigger + side * CFG["target_r"] * risk
+    # major old highs (lows) only, and ignore ones just above the entry (price is about to clear them)
+    block = [v for _, v in swings(bars, i, other, 250, w=10) if (v - trigger) * side > 0.5 * risk]
+    if block:
+        nxt = min(block) if up else max(block)
+        room = (nxt - trigger) * side / risk if risk else 0
+        if (nxt - target) * side >= 0:
+            out.append(("✓", f"room to the target: next {'resistance' if up else 'support'} {px(nxt)} "
+                             f"is beyond it"))
+        else:
+            out.append(("⚠️", f"{'resistance' if up else 'support'} at {px(nxt)} comes before the target "
+                              f"({room:.1f}x the risk away): price may stall there"))
+    else:
+        out.append(("✓", f"no old {'high' if up else 'low'} in the way (at a {'1-year high' if up else '1-year low'})"))
+    return out
+
+
+def news_check(query, side):
+    """Recent headlines (last 3 days) for a stock or coin from Google News, with a mood mark."""
+    import news as N
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+        {"q": query + " when:3d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (signal program news reader)"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            items = [N.tag(x) for x in N.parse(r.read(), "Google News")]
+    except Exception as e:
+        return ("–", f"news not checked ({str(e)[:40]})"), []
+    items.sort(key=lambda x: -(x["t"] or 0))
+    top = items[:2]
+    if not items:
+        return ("–", "no news in the last 3 days"), []
+    ups = sum(1 for x in items[:8] if x["mood"] == "up")
+    downs = sum(1 for x in items[:8] if x["mood"] == "down")
+    good = ups > downs if side == 1 else downs > ups
+    bad = downs > ups if side == 1 else ups > downs
+    mark = "✓" if good else "⚠️" if bad else "–"
+    mood = "mostly positive" if ups > downs else "mostly negative" if downs > ups else "mixed"
+    return (mark, f"news {mood} ({len(items)} stories in 3 days)"), [x["title"] for x in top]
+
+
+def earnings_dates(days=10):
+    """US results (earnings) dates for the next few days from Nasdaq's calendar: {symbol: 'YYYY-MM-DD'}."""
+    out = {}
+    for n in range(days):
+        day = time.strftime("%Y-%m-%d", time.gmtime(time.time() + n * 86400))
+        try:
+            req = urllib.request.Request(f"https://api.nasdaq.com/api/calendar/earnings?date={day}",
+                                         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                rows = (json.loads(r.read().decode()).get("data") or {}).get("rows") or []
+        except Exception as e:
+            print("earnings calendar:", day, str(e)[:60])
+            continue
+        for x in rows:
+            out.setdefault(str(x.get("symbol", "")).upper().replace(".", "-"), day)
+    return out
+
+
+def enrich(m, events):
+    """Adds news and (US) results-date checks to new setups."""
+    setups = [e for e in events if e["kind"] == "setup"]
+    if not setups:
+        return
+    cal = earnings_dates() if m["env"] == "US" else None
+    for e in setups:
+        q = f'"{e["name"]}" stock' if m["env"] == "US" else f'"{e["name"]}" crypto'
+        mark, heads = news_check(q, e["side"])
+        e["checks"].append(mark)
+        e["headlines"] = heads
+        if cal is not None:
+            when = cal.get(e["symbol"])
+            if when:
+                n = (datetime.strptime(when, "%Y-%m-%d") - datetime.utcnow()).days + 1
+                e["checks"].append(("⚠️", f"results due {when} (in {max(n, 0)} days): price can jump either way"))
+            elif cal:
+                e["checks"].append(("✓", "no results due in the next 10 days"))
+            else:
+                e["checks"].append(("–", "results dates not checked"))
+        e["score"] = sum(1 for mk, _ in e["checks"][2:] if mk == "✓")
+        e["of"] = len(e["checks"]) - 2
+
+
 def reasons(ind, i, side):
     d = "up" if side == 1 else "down"
     out = [f"Supertrend turned {d} and price is {'above' if side == 1 else 'below'} its 200-day average"]
@@ -228,7 +356,8 @@ def step(stock, bars, row, first, events, sides, tkey="last_t"):
         row["pending"] = {"side": side, "trigger": trigger, "risk": risk, "day": b["day"], "t": b["t"]}
         events.append(dict(base, kind="setup", side=side, trigger=trigger, stop=trigger - side * risk,
                            target=trigger + side * CFG["target_r"] * risk, risk=risk, adx=ind["adx"][j],
-                           day=b["day"], why=reasons(ind, j, side)))
+                           day=b["day"], why=reasons(ind, j, side),
+                           checks=checklist(bars, ind, j, side, trigger, risk)))
     row[tkey] = bars[-1]["t"]
 
 
@@ -250,7 +379,9 @@ def setup_text(m, e, risk_usd):
             f"🛑 Stop loss: {px(e['stop'])} ({pct(e['stop']):.1f}% {'below' if side == 1 else 'above'} entry)\n"
             f"🎯 Target: {px(e['target'])} ({pct(e['target']):.1f}%, 2x the risk)\n"
             f"💰 {qty(size(e['trigger'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
-            f"Why: " + "; ".join(e["why"]))
+            + (f"Checks ({e['score']}/{e['of']} extra checks pass):\n" if "score" in e else "Checks:\n")
+            + "\n".join(f"{mk} {t}" for mk, t in e.get("checks") or [("✓", w) for w in e["why"]])
+            + "".join(f"\n📰 {h}" for h in e.get("headlines") or []))
 
 
 def trade_line(e):
@@ -260,7 +391,7 @@ def trade_line(e):
 
 def messages(m, events, open_trades, checked, failed, day, risk_usd):
     by = lambda k: [e for e in events if e["kind"] == k]
-    setups = sorted(by("setup"), key=lambda e: -e["adx"])
+    setups = sorted(by("setup"), key=lambda e: (-e.get("score", 0), -e["adx"]))
     when = datetime.strptime(day[:10], "%Y-%m-%d").strftime("%a %d %b") if day else "today"
     head = f"{m['title']} · {when} · {m.get('session', 'daily close')}\nChecked {checked} {m['what']}"
     if failed:
@@ -285,7 +416,7 @@ def messages(m, events, open_trades, checked, failed, day, risk_usd):
         group = [e for e in setups if e["side"] == side]
         if not group:
             continue
-        lines = [f"{title} ({len(group)}), strongest trend first. Don't buy yet: enter only if price crosses "
+        lines = [f"{title} ({len(group)}), most checks passed first. Don't buy yet: enter only if price crosses "
                  f"the entry level in the next {SETUP_DAYS} days. I'll message you when it does."]
         lines += [f"\n{n}. " + setup_text(m, e, risk_usd) for n, e in enumerate(group[:MAX_DETAILED], 1)]
         if len(group) > MAX_DETAILED:
@@ -475,6 +606,8 @@ def main():
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = {sym: (bars, err) for sym, bars, err in pool.map(fetch, items)}
     events, failed, latest = [], [], ""
+    if seed:
+        print("Seeding a new session from its latest candle.")
     for it in items:
         bars, err = results[it["symbol"]]
         if err or not bars:
@@ -492,6 +625,7 @@ def main():
         send(m, [f"{m['title']} scanner is set up: {checked} {m['what']} loaded. "
                  f"From the next session you'll get new setups {m['when']}, then entry, target and stop alerts."])
     elif latest and latest != state.get(day_key):
+        enrich(m, events)
         write_log(log_path, events)
         if not send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd)):
             print("telegram send failed")
