@@ -1,3 +1,4 @@
 time,symbol,timeframe,event,side,price,stop,target,result,R,reason
 2026-10-28 10:55:51,NIFTY 50,15m,ENTRY,SELL,22506.1992,22598.4247,22321.7483,,,Opening range breakdown
 2026-10-28 10:55:55,CRUDE OIL,15m,ENTRY,BUY,101.39,101.0102,102.1495,,,Opening range breakout up
+2026-10-28 11:15:21,NIFTY 50,15m,EXIT,SELL,22598.4247,22598.4247,22321.7483,❌ Stop hit,-1.0,Opening range breakdown
