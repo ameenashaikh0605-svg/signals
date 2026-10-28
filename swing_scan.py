@@ -35,8 +35,13 @@ MARKETS = {
     "us": {"title": "🇺🇸 US SWING", "what": "S&P 500 stocks", "list": "us_stocks.csv", "source": "yahoo",
            "sides": (1,), "unit": "shares", "env": "US", "when": "after the US close"},
     "crypto": {"title": "🪙 CRYPTO SWING", "what": "top coins", "list": "crypto_coins.csv", "source": "binance",
-               "sides": (1, -1), "unit": "coins", "env": "CRYPTO", "when": "after each daily close (5:30 am India time)"},
+               "sides": (1, -1), "unit": "coins", "env": "CRYPTO",
+               "when": "twice a day, at 1:30 pm (India session) and 9:30 pm (US session) India time"},
 }
+# Crypto never closes, so it gets two sets of 24-hour candles: one closing at 08:00 UTC (1:30 pm India time)
+# and one closing at 16:00 UTC (9:30 pm India time). Each run uses the set that closed most recently.
+CRYPTO_SESSIONS = {8: "India session (24h candles to 1:30 pm)", 16: "US session (24h candles to 9:30 pm)"}
+IST = 19800
 
 
 def load_list(m):
@@ -105,6 +110,39 @@ def binance_daily(symbol, live=False):
             for r in rows if live or r[6] < now_ms]
 
 
+def binance_anchored(symbol, anchor_h):
+    """Closed 24-hour candles that start and end at anchor_h:00 UTC, built from 4-hour candles (~2 years)."""
+    src, rows, start = SS.BinanceSource(), [], int((time.time() - 820 * 86400) * 1000)
+    while True:
+        chunk = retry(lambda: src._get(f"/klines?symbol={symbol}&interval=4h&startTime={start}&limit=1000"))
+        rows += chunk
+        if len(chunk) < 1000:
+            break
+        start = chunk[-1][0] + 1
+    now_ms = int(time.time() * 1000)
+    groups = {}
+    for r in rows:
+        t = r[0] // 1000
+        groups.setdefault(t - (t - anchor_h * 3600) % 86400, []).append(r)
+    bars = []
+    for t0 in sorted(groups):
+        g = groups[t0]
+        if len(g) != 6 or g[-1][6] >= now_ms:   # incomplete or still forming
+            continue
+        end = datetime.fromtimestamp(t0 + 86400 + IST, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        bars.append({"t": t0, "o": float(g[0][1]), "h": max(float(x[2]) for x in g),
+                     "l": min(float(x[3]) for x in g), "c": float(g[-1][4]), "v": sum(float(x[5]) for x in g),
+                     "day": end})
+    return bars
+
+
+def binance_since(symbol, since_t):
+    """High, low and latest price since `since_t` (unix seconds), from 1-hour candles: one bar dict."""
+    rows = retry(lambda: SS.BinanceSource()._get(f"/klines?symbol={symbol}&interval=1h&limit=72"))
+    rows = [r for r in rows if r[0] // 1000 >= since_t] or rows[-1:]
+    return {"h": max(float(r[2]) for r in rows), "l": min(float(r[3]) for r in rows), "c": float(rows[-1][4])}
+
+
 def reasons(ind, i, side):
     d = "up" if side == 1 else "down"
     out = [f"Supertrend turned {d} and price is {'above' if side == 1 else 'below'} its 200-day average"]
@@ -127,14 +165,15 @@ def target_of(tr):
     return tr.get("target") or tr["entry"] + tr.get("side", 1) * CFG["target_r"] * tr["risk"]
 
 
-def step(stock, bars, row, first, events, sides):
-    """Walk through every daily candle closed since the last run. Updates `row` and appends to `events`."""
+def step(stock, bars, row, first, events, sides, tkey="last_t"):
+    """Walk through every daily candle closed since the last run. Updates `row` and appends to `events`.
+    `tkey` names the field holding the last candle seen (crypto keeps one per session)."""
     sym = stock["symbol"]
     if len(bars) <= CFG["ema_trend"] + 2:
         return
-    last = row.get("last_t")
+    last = row.get(tkey)
     if first or last is None:
-        row["last_t"] = bars[-1]["t"]
+        row[tkey] = bars[-1]["t"]
         return
     cutoff = bars[-1]["t"] - CATCH_UP_DAYS * 86400
     todo = [j for j, b in enumerate(bars) if b["t"] > last and b["t"] >= cutoff]
@@ -170,13 +209,13 @@ def step(stock, bars, row, first, events, sides):
                 entry = max(b["o"], pend["trigger"]) if side == 1 else min(b["o"], pend["trigger"])  # gap: open
                 stop = entry - side * pend["risk"]
                 row["trade"] = {"side": side, "entry": entry, "stop": stop, "risk": pend["risk"], "best": entry,
-                                "day": b["day"], "target": entry + side * CFG["target_r"] * pend["risk"]}
+                                "day": b["day"], "target": entry + side * CFG["target_r"] * pend["risk"],
+                                "opened_t": b["t"]}
                 row["pending"] = None
                 events.append(dict(base, kind="entry", side=side, entry=entry, stop=stop,
                                    target=row["trade"]["target"], day=b["day"]))
                 continue
-            pend["waited"] = pend.get("waited", 0) + 1
-            if pend["waited"] >= SETUP_DAYS:
+            if b["t"] - pend.get("t", b["t"] - 86400) >= SETUP_DAYS * 86400:
                 row["pending"] = None
                 events.append(dict(base, kind="expired", side=side, trigger=pend["trigger"], day=b["day"]))
             else:
@@ -186,11 +225,11 @@ def step(stock, bars, row, first, events, sides):
             continue
         trigger = b["h"] if side == 1 else b["l"]
         risk = CFG["stop_atr"] * a
-        row["pending"] = {"side": side, "trigger": trigger, "risk": risk, "day": b["day"], "waited": 0}
+        row["pending"] = {"side": side, "trigger": trigger, "risk": risk, "day": b["day"], "t": b["t"]}
         events.append(dict(base, kind="setup", side=side, trigger=trigger, stop=trigger - side * risk,
                            target=trigger + side * CFG["target_r"] * risk, risk=risk, adx=ind["adx"][j],
                            day=b["day"], why=reasons(ind, j, side)))
-    row["last_t"] = bars[-1]["t"]
+    row[tkey] = bars[-1]["t"]
 
 
 def size(entry, stop, risk_usd):
@@ -207,7 +246,7 @@ def setup_text(m, e, risk_usd):
     word = "buy above" if side == 1 else "sell/short below"
     pct = lambda x: abs(x - e["trigger"]) / e["trigger"] * 100
     return (f"{e['symbol']} · {e['name']}" + (f" ({e['sector']})" if e.get("sector") else "") + "\n"
-            f"▶ Entry: {word} {px(e['trigger'])} ({'today\'s high' if side == 1 else 'today\'s low'})\n"
+            f"▶ Entry: {word} {px(e['trigger'])} ({m.get('bar', "today's")} {'high' if side == 1 else 'low'})\n"
             f"🛑 Stop loss: {px(e['stop'])} ({pct(e['stop']):.1f}% {'below' if side == 1 else 'above'} entry)\n"
             f"🎯 Target: {px(e['target'])} ({pct(e['target']):.1f}%, 2x the risk)\n"
             f"💰 {qty(size(e['trigger'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
@@ -222,8 +261,8 @@ def trade_line(e):
 def messages(m, events, open_trades, checked, failed, day, risk_usd):
     by = lambda k: [e for e in events if e["kind"] == k]
     setups = sorted(by("setup"), key=lambda e: -e["adx"])
-    when = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b") if day else "today"
-    head = f"{m['title']} · {when} daily close\nChecked {checked} {m['what']}"
+    when = datetime.strptime(day[:10], "%Y-%m-%d").strftime("%a %d %b") if day else "today"
+    head = f"{m['title']} · {when} · {m.get('session', 'daily close')}\nChecked {checked} {m['what']}"
     if failed:
         head += f" ({failed} could not be loaded)"
     parts = [head]
@@ -337,8 +376,15 @@ def live_pass(key, m, risk_usd):
     items = [it for it in load_list(m) if it["symbol"] in watch]
     loader = yahoo_daily if m["source"] == "yahoo" else binance_daily
 
+    def since(row):   # crypto: only prices after the setup's candle closed / after the entry count
+        if row.get("trade"):
+            return max(row["trade"].get("opened_t") or 0, time.time() - 86400)
+        return row["pending"]["t"] + 86400
+
     def fetch(item):
         try:
+            if key == "crypto":
+                return item, [dict(binance_since(item["symbol"], since(rows[item["symbol"]])), day=today)]
             return item, loader(item["symbol"], live=True)
         except Exception:
             return item, None
@@ -369,7 +415,7 @@ def live_pass(key, m, risk_usd):
                     targets.append(f"🎯 {name}: reached the target {px(tgt)} ({word} at {px(tr['entry'])}, "
                                    f"{side * (tgt / tr['entry'] - 1) * 100:+.1f}%). Book some profit; "
                                    f"keep the rest with the stop at {px(tr['stop'])}.")
-        elif pend and pend.get("alert_day") != today and pend["day"] < today:
+        elif pend and pend.get("alert_day") != today and (key == "crypto" or pend["day"] < today):
             side = pend["side"]
             if (side == 1 and b["h"] >= pend["trigger"]) or (side == -1 and b["l"] <= pend["trigger"]):
                 pend["alert_day"] = today
@@ -410,7 +456,15 @@ def main():
     state = load_state(state_path)
     rows = state.setdefault("rows", {})
     first = not rows
-    loader = yahoo_daily if m["source"] == "yahoo" else binance_daily
+    loader, tkey, day_key = (yahoo_daily if m["source"] == "yahoo" else binance_daily), "last_t", "last_day"
+    seed = False
+    if key == "crypto":
+        anchor = 8 if 8 <= datetime.now(timezone.utc).hour < 16 else 16   # the session that closed last
+        loader = lambda sym: binance_anchored(sym, anchor)
+        tkey, day_key = f"last_t_{anchor}", f"last_day_{anchor}"
+        # a session's first run: start from its latest closed candle, so that candle is checked right away
+        seed = not first and not any(tkey in r for r in rows.values())
+        m = dict(m, session=CRYPTO_SESSIONS[anchor], bar="the last 24h")
 
     def fetch(item):
         try:
@@ -427,21 +481,23 @@ def main():
             failed.append(f"{it['symbol']}: {err or 'no data'}")
             continue
         latest = max(latest, bars[-1]["day"])
-        step(it, bars, rows.setdefault(it["symbol"], {}), first, events, m["sides"])
+        if seed and len(bars) > 1:
+            rows.setdefault(it["symbol"], {}).setdefault(tkey, bars[-2]["t"])
+        step(it, bars, rows.setdefault(it["symbol"], {}), first, events, m["sides"], tkey)
     if failed:
         print(f"{len(failed)} failed:", "; ".join(failed[:20]))
     open_trades = [s for s, r in rows.items() if r.get("trade")]
     checked = len(items) - len(failed)
     if first:
         send(m, [f"{m['title']} scanner is set up: {checked} {m['what']} loaded. "
-                 f"From the next daily close you'll get one summary a day with new setups, entries, targets and stops."])
-    elif latest and latest != state.get("last_day"):
+                 f"From the next session you'll get new setups {m['when']}, then entry, target and stop alerts."])
+    elif latest and latest != state.get(day_key):
         write_log(log_path, events)
         if not send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd)):
             print("telegram send failed")
     else:
         print("No new daily candle since the last run: nothing sent.")
-    state["last_day"] = latest or state.get("last_day")
+    state[day_key] = latest or state.get(day_key)
     state["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save_state(state_path, state)
     print(f"Done: {checked} checked, {len(failed)} failed, {len(events)} events, {len(open_trades)} open trades.")

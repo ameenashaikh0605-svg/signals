@@ -2,7 +2,8 @@ name: Crypto swing signals
 
 on:
   schedule:
-    - cron: "15 0 * * *"   # just after the daily candle closes (00:00 UTC = 5:30 am India time); GitHub may start it late
+    - cron: "10 8 * * *"    # India session: 24h candles close at 08:00 UTC (1:30 pm India time)
+    - cron: "10 16 * * *"   # US session: 24h candles close at 16:00 UTC (9:30 pm India time)
   workflow_dispatch:
     inputs:
       test_telegram:
