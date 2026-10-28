@@ -250,7 +250,7 @@ def send(m, texts):
         print("\n" + t + "\n")
     if not token or not chat:
         print(f"{m['env']}_TELEGRAM_BOT_TOKEN / chat id not set: messages printed here only.")
-        return True
+        return "--test-telegram" not in sys.argv   # a test with no bot set up should show as failed
     return all(SS.send_telegram(token, chat, t) for t in texts)
 
 
@@ -260,7 +260,7 @@ def main():
     m = MARKETS[key]
     risk_usd = float(os.environ.get(f"{m['env']}_RISK_PER_TRADE_USD") or 12)   # about ₹1000 per trade
     if "--test-telegram" in sys.argv:
-        ok = send(m, [f"✅ {m['title']} alerts connected. {m['when'].capitalize()} you'll get one summary here: "
+        ok = send(m, [f"✅ {m['title']} alerts connected. {m['when'][0].upper() + m['when'][1:]} you'll get one summary here: "
                       f"new swing setups in {m['what']} and any stop losses hit."])
         sys.exit(0 if ok else 1)
     state_path = os.path.join(HERE, f"{key}_state.json")
