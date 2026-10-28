@@ -189,8 +189,8 @@ def messages(m, events, open_trades, checked, failed, day, risk_usd):
             word = "Buy" if side == 1 else "Sell/short"
             gap = abs(e["entry"] - e["stop"]) / e["entry"] * 100
             lines.append(f"\n{n}. {e['symbol']} · {e['name']} ({e['sector']})\n"
-                         f"▶ {word} near {px(e['entry'])}  🛑 Stop {px(e['stop'])} "
-                         f"({gap:.1f}% {'below' if side == 1 else 'above'})\n"
+                         f"▶ Entry: {word.lower()} near {px(e['entry'])}\n"
+                         f"🛑 Stop loss: {px(e['stop'])} ({gap:.1f}% {'below' if side == 1 else 'above'} entry)\n"
                          f"💰 {qty(size(e['entry'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
                          f"Why: " + "; ".join(e["why"]))
         if len(group) > MAX_DETAILED:
@@ -306,8 +306,9 @@ def live_pass(key, m, risk_usd):
             continue
         row["early_day"] = today
         stop, _, _ = S.levels(b["c"], 1, ind["atr"][i], CFG)
-        early.append((ind["adx"][i], f"{it['symbol']} · {it['name']}\n▶ Now {px(b['c'])}  🛑 Stop {px(stop)} "
-                      f"({(b['c'] - stop) / b['c'] * 100:.1f}% below)  💰 {qty(size(b['c'], stop, risk_usd))} shares "
+        early.append((ind["adx"][i], f"{it['symbol']} · {it['name']}\n▶ Entry: buy near {px(b['c'])} (price now)\n"
+                      f"🛑 Stop loss: {px(stop)} ({(b['c'] - stop) / b['c'] * 100:.1f}% below entry)\n"
+                      f"💰 {qty(size(b['c'], stop, risk_usd))} shares "
                       f"risks about ${risk_usd:g}\nWhy: " + "; ".join(reasons(ind, i, 1)[1:] or ["trend turning up"])))
     parts = []
     if stops:
