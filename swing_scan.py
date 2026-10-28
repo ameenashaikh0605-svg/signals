@@ -39,6 +39,10 @@ MARKETS = {
                "sides": (1, -1), "unit": "coins", "env": "CRYPTO",
                "when": "twice a day, at 1:30 pm (India session) and 9:30 pm (US session) India time"},
 }
+MARKETS["main"] = {"title": "📅 SWING", "what": "markets", "list": "config.json", "source": "yahoo",
+                   "sides": (1, -1), "unit": "units", "env": "", "cur": "",
+                   "when": "after each market's daily close (checked every 30 minutes)"}
+CUR = "$"
 # Crypto never closes, so it gets two sets of 24-hour candles: one closing at 08:00 UTC (1:30 pm India time)
 # and one closing at 16:00 UTC (9:30 pm India time). Each run uses the set that closed most recently.
 CRYPTO_SESSIONS = {8: "India session (24h candles to 1:30 pm)", 16: "US session (24h candles to 9:30 pm)"}
@@ -46,6 +50,10 @@ IST = 19800
 
 
 def load_list(m):
+    if m["list"] == "config.json":   # the main bot's own markets (Yahoo ones; crypto has its own bot)
+        cfg = SS.load_config()
+        return [{"symbol": w["code"], "name": w.get("name") or w["code"], "sector": ""} for w in cfg["watch"]
+                if SS.guess_source(w["code"]) == "yahoo"]
     with open(os.path.join(HERE, m["list"]), encoding="utf-8") as f:
         return [r for r in csv.DictReader(f) if r.get("symbol")]
 
@@ -254,7 +262,7 @@ def enrich(m, events):
         return
     cal = earnings_dates() if m["env"] == "US" else None
     for e in setups:
-        q = f'"{e["name"]}" stock' if m["env"] == "US" else f'"{e["name"]}" crypto'
+        q = {"US": f'"{e["name"]}" stock', "CRYPTO": f'"{e["name"]}" crypto'}.get(m["env"], f'"{e["name"].title()}"')
         mark, heads = news_check(q, e["side"])
         e["checks"].append(mark)
         e["headlines"] = heads
@@ -285,8 +293,8 @@ def reasons(ind, i, side):
 
 def px(x):
     if x >= 1:
-        return f"${x:,.2f}"
-    return f"${x:.{max(4, 3 - int(f'{x:e}'.split('e')[1]))}f}".rstrip("0")
+        return f"{CUR}{x:,.2f}"
+    return f"{CUR}{x:.{max(4, 3 - int(f'{x:e}'.split('e')[1]))}f}".rstrip("0")
 
 
 def target_of(tr):
@@ -378,10 +386,20 @@ def setup_text(m, e, risk_usd):
             f"▶ Entry: {word} {px(e['trigger'])} ({m.get('bar', "today's")} {'high' if side == 1 else 'low'})\n"
             f"🛑 Stop loss: {px(e['stop'])} ({pct(e['stop']):.1f}% {'below' if side == 1 else 'above'} entry)\n"
             f"🎯 Target: {px(e['target'])} ({pct(e['target']):.1f}%, 2x the risk)\n"
-            f"💰 {qty(size(e['trigger'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}\n"
+            + size_line(m, e, risk_usd) + "\n"
             + (f"Checks ({e['score']}/{e['of']} extra checks pass):\n" if "score" in e else "Checks:\n")
             + "\n".join(f"{mk} {t}" for mk, t in e.get("checks") or [("✓", w) for w in e["why"]])
             + "".join(f"\n📰 {h}" for h in e.get("headlines") or []))
+
+
+def size_line(m, e, risk_usd):
+    if m["env"]:
+        return f"💰 {qty(size(e['trigger'], e['stop'], risk_usd))} {m['unit']} risks about ${risk_usd:g}"
+    cfg = SS.load_config()   # main bot: same sizing and option hint as its other alerts
+    book = SS.T.RiskBook(cfg.get("risk"), None)
+    sz = book.size(e["symbol"], e["side"], e["trigger"], e["stop"], option=False)
+    opt = SS.option_hint(e["symbol"], e["name"], e["side"], e["trigger"], "swing")
+    return "\n".join(x for x in ((sz or {}).get("text"), f"Option: {opt}" if opt else None) if x)
 
 
 def trade_line(e):
@@ -470,12 +488,13 @@ def write_log(path, events):
 
 
 def send(m, texts):
-    token = os.environ.get(f"{m['env']}_TELEGRAM_BOT_TOKEN", "").strip()
-    chat = (os.environ.get(f"{m['env']}_TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    pre = f"{m['env']}_" if m["env"] else ""   # the main bot uses plain TELEGRAM_BOT_TOKEN
+    token = os.environ.get(f"{pre}TELEGRAM_BOT_TOKEN", "").strip()
+    chat = (os.environ.get(f"{pre}TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
     for t in texts:
         print("\n" + t + "\n")
     if not token or not chat:
-        print(f"{m['env']}_TELEGRAM_BOT_TOKEN / chat id not set: messages printed here only.")
+        print(f"{pre}TELEGRAM_BOT_TOKEN / chat id not set: messages printed here only.")
         return "--test-telegram" not in sys.argv   # a test with no bot set up should show as failed
     return all(SS.send_telegram(token, chat, t) for t in texts)
 
@@ -490,12 +509,13 @@ def live_pass(key, m, risk_usd):
     """Every 30 minutes: alert right away when a GET READY setup's entry level is crossed, when an open
     trade reaches its target, and when it breaks its stop. Each alert is sent once; the daily summary
     then records them. US: only while the market is open. Crypto: around the clock."""
+    today = None   # main: each market's own latest candle day
     if key == "us":
         is_open, today = us_market_open()
         if not is_open:
             print("US market closed: no live check.")
             return
-    else:
+    elif key == "crypto":
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     state_path = os.path.join(HERE, f"{key}_state.json")
     state = load_state(state_path)
@@ -525,17 +545,20 @@ def live_pass(key, m, risk_usd):
     entries, targets, stops = [], [], []
     for it, bars in results:
         row = rows[it["symbol"]]
-        if not bars or bars[-1]["day"] != today:
+        if not bars or (today and bars[-1]["day"] != today):
             continue
         b, tr, pend = bars[-1], row.get("trade"), row.get("pending")
+        day = today or b["day"]
+        if not today and (pend and b["day"] <= pend["day"] or tr and b["day"] < tr.get("day", "")):
+            continue   # main: no candle since the setup / entry yet
         name = f"{it['symbol']} · {it['name']}"
         if tr:
             side = tr.get("side", 1)
             word = "bought" if side == 1 else "sold"
             if (side == 1 and b["l"] <= tr["stop"]) or (side == -1 and b["h"] >= tr["stop"]):
-                if tr.get("stop_alert_day") == today:
+                if tr.get("stop_alert_day") == day:
                     continue
-                tr["stop_alert_day"] = today
+                tr["stop_alert_day"] = day
                 stops.append(f"{'🔒' if side * (tr['stop'] - tr['entry']) > 0 else '❌'} {name}: price "
                              f"{px(b['c'])} broke the stop {px(tr['stop'])} ({word} at {px(tr['entry'])}, "
                              f"{side * (tr['stop'] / tr['entry'] - 1) * 100:+.1f}% at the stop)")
@@ -546,10 +569,10 @@ def live_pass(key, m, risk_usd):
                     targets.append(f"🎯 {name}: reached the target {px(tgt)} ({word} at {px(tr['entry'])}, "
                                    f"{side * (tgt / tr['entry'] - 1) * 100:+.1f}%). Book some profit; "
                                    f"keep the rest with the stop at {px(tr['stop'])}.")
-        elif pend and pend.get("alert_day") != today and (key == "crypto" or pend["day"] < today):
+        elif pend and pend.get("alert_day") != day and (key != "us" or pend["day"] < today):
             side = pend["side"]
             if (side == 1 and b["h"] >= pend["trigger"]) or (side == -1 and b["l"] <= pend["trigger"]):
-                pend["alert_day"] = today
+                pend["alert_day"] = day
                 stop = pend["trigger"] - side * pend["risk"]
                 tgt = pend["trigger"] + side * CFG["target_r"] * pend["risk"]
                 entries.append(f"✅ {name}: {'BUY' if side == 1 else 'SELL'} triggered at {px(pend['trigger'])} "
@@ -575,6 +598,8 @@ def main():
     key = args[0] if args else "us"
     m = MARKETS[key]
     risk_usd = float(os.environ.get(f"{m['env']}_RISK_PER_TRADE_USD") or 12)   # about ₹1000 per trade
+    global CUR
+    CUR = m.get("cur", "$")
     if "--live" in sys.argv:
         return live_pass(key, m, risk_usd)
     if "--test-telegram" in sys.argv:
@@ -621,7 +646,14 @@ def main():
         print(f"{len(failed)} failed:", "; ".join(failed[:20]))
     open_trades = [s for s, r in rows.items() if r.get("trade")]
     checked = len(items) - len(failed)
-    if first:
+    if key == "main":   # checked every 30 minutes: message only when something happened
+        if events and not first:
+            enrich(m, events)
+            write_log(log_path, events)
+            send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd))
+        else:
+            print("Main swing: nothing new." if not first else "Main swing: learned history.")
+    elif first:
         send(m, [f"{m['title']} scanner is set up: {checked} {m['what']} loaded. "
                  f"From the next session you'll get new setups {m['when']}, then entry, target and stop alerts."])
     elif latest and latest != state.get(day_key):

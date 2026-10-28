@@ -43,9 +43,9 @@ def make_engine(cfg):
     cfg["timemachine"] = dict(cfg.get("timemachine") or {}, enabled=False)
     cfg["selected"] = "ALL"
     engine = SS.Engine(cfg)
-    if os.environ.get("CRYPTO_TELEGRAM_BOT_TOKEN", "").strip():
-        # crypto swing alerts go to their own bot (swing_scan.py crypto), not this one
-        engine.items = [it for it in engine.items if not (it["source"] == "binance" and it["mode"] == "swing")]
+    # swing alerts come from swing_scan.py instead (two-step: get ready, entry, target, stop):
+    # `main` for these markets, `crypto` for coins (its own bot)
+    engine.items = [it for it in engine.items if it["mode"] != "swing"]
     sent = []
 
     def alert(text, mode=None):  # send now: the run ends right after, so no background threads

@@ -208,6 +208,23 @@ def plain_reasons(it, bars, ind, i, side, why, scalp):
     return out
 
 
+def extra_checks(it, bars, ind, i, side, entry, risk):
+    """Support/resistance and news checks (same as the swing setups), or '' if they can't run."""
+    try:
+        import swing_scan as W
+        W.CUR = ""
+        ind = dict(ind, v=[b["v"] or 0.0 for b in bars])
+        checks = W.checklist(bars, ind, i, side, entry, risk)[2:]
+        checks = [c for c in checks if "averages" not in c[1] and "ADX" not in c[1]]   # already in the reasons
+        mark, heads = W.news_check(f'"{it["name"].title()}"', side)
+        checks.append(mark)
+        return ("Checks:\n" + "\n".join(f"{mk} {t}" for mk, t in checks)
+                + "".join(f"\n📰 {h}" for h in heads) + "\n")
+    except Exception as e:
+        print("extra checks skipped:", e)
+        return ""
+
+
 def is_indian_index(code):
     up = code.upper()
     return up in ("^NSEI", "^BSESN", "^NSEBANK", "^CNXFIN", "^NSEMDCP50", "NIFTY_MID_SELECT.NS") or up.startswith(("NFO_", "BFO_"))
@@ -520,6 +537,7 @@ class Engine:
         it["last_signal"]["option"] = opt
         idx = ""
         reasons = plain_reasons(it, bars, ind, i, side, why, scalp)
+        extra = "" if scalp else extra_checks(it, bars, ind, i, side, entry, risk)
         tgt_line = (f"🎯 Target {fmt_px(target)}" if tr["target"] is not None
                     else "🎯 No fixed target: the stop follows price, exit when it is hit")
         self.alert(f"{icon} {word} {it['name']}  ·  {it['label']}\n"
@@ -527,7 +545,8 @@ class Engine:
                    + f"▶ Entry ~ {fmt_px(entry)}\n🛑 Stop loss {fmt_px(stop)}\n{tgt_line}\n"
                    + ("(These are " + it['name'] + " levels, not option prices.)\n" if opt else "")
                    + (tr["size"] + "\n" if tr.get("size") else "")
-                   + "\nWhy the trend looks good:\n" + "\n".join("• " + r for r in reasons) + "\n\n"
+                   + "\nWhy the trend looks good:\n" + "\n".join("• " + r for r in reasons) + "\n"
+                   + extra + "\n"
                    + f"Candle closed {bar_time}{f' · data delayed {delay} min' if delay else ''}. "
                    + "I'll message you when the target or stop loss is hit. Not advice.", mode=it["mode"])
         if self.cfg["timemachine"].get("enabled", True):
