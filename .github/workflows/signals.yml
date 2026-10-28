@@ -47,7 +47,7 @@ jobs:
             python cloud_scan.py || echo "scan failed, trying again next round"
             # every 30 minutes: live US swing check (only does anything while the US market is open)
             if [ $(( 10#$(date +%M) % 30 )) -lt 5 ]; then
-              git pull --rebase -q || git rebase --abort || true   # pick up the after-close run's US state first
+              git pull --rebase --autostash -q || git rebase --abort || true   # pick up the after-close run's US state first
               python swing_scan.py us --live || echo "US live check failed"
             fi
             for f in cloud_state.json risk_today.json signals_log.csv us_state.json; do [ -f "$f" ] && git add "$f"; done; true
