@@ -10,3 +10,4 @@ time,symbol,timeframe,event,side,price,stop,target,result,R,reason
 2026-10-29 20:00:22,DOW JONES,15m,ENTRY,BUY,52329.2188,52165.8312,52655.9938,,,Opening range breakout up
 2026-10-29 23:25:22,DOW JONES,15m,EXIT,BUY,52165.8312,52165.8312,52655.9938,❌ Stop hit,-1.0,Opening range breakout up
 2026-10-30 02:30:22,BITCOIN,1h,ENTRY,SELL,78851.99,79758.128,,,,20-bar breakdown with volume
+2026-10-30 03:30:22,BITCOIN,1h,EXIT,SELL,79758.128,79758.128,,❌ Stop hit,-1.0,20-bar breakdown with volume
