@@ -45,5 +45,5 @@ jobs:
           for f in us_state.json us_signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
           if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
           git commit -q -m "Save US swing state [skip ci]"
-          for i in 1 2 3 4 5; do git pull --rebase -q && git push -q && exit 0; sleep 7; done
+          for i in 1 2 3 4 5; do { git pull --rebase -X theirs -q || { git rebase --abort; false; }; } && git push -q && exit 0; sleep 7; done
           exit 1

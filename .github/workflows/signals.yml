@@ -47,7 +47,7 @@ jobs:
             python cloud_scan.py || echo "scan failed, trying again next round"
             # every 30 minutes: live swing checks (entry / target / stop alerts); US only while its market is open
             if [ $(( 10#$(date +%M) % 30 )) -lt 5 ]; then
-              git pull --rebase --autostash -q || git rebase --abort || true   # pick up the after-close run's US state first
+              git pull --rebase --autostash -X theirs -q || git rebase --abort || true   # pick up the after-close run's US state first
               python swing_scan.py main || echo "main swing scan failed"
               python swing_scan.py main --live || echo "main live check failed"
               python swing_scan.py us --live || echo "US live check failed"
@@ -56,7 +56,7 @@ jobs:
             for f in cloud_state.json risk_today.json signals_log.csv us_state.json crypto_state.json main_state.json main_signals_log.csv; do [ -f "$f" ] && git add "$f"; done; true
             if ! git diff --cached --quiet; then
               git commit -q -m "Save signal state [skip ci]"
-              for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done
+              for i in 1 2 3; do { git pull --rebase -X theirs -q || { git rebase --abort; false; }; } && git push -q && break; sleep 5; done
             fi
             # wait until 20 seconds after the next 5-minute mark, so the 5-minute candle has closed
             now=$(date +%s); next=$(( (now / 300 + 1) * 300 + 20 ))
