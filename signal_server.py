@@ -815,7 +815,19 @@ def desktop_alert(text):
         print("desktop alert error:", e)
 
 
+GROUP_NOTE = "\n\nℹ️ Educational only, not investment advice. Do your own research."
+
+
 def send_telegram(bot_token, chat_id, text):
+    ok = _send_telegram(bot_token, chat_id, text)
+    # a copy for the friends' group (TELEGRAM_GROUP_CHAT_ID), when this bot has been added to it
+    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+    if group and group != str(chat_id).strip():
+        _send_telegram(bot_token, group, text + GROUP_NOTE)
+    return ok
+
+
+def _send_telegram(bot_token, chat_id, text):
     try:
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
         urllib.request.urlopen(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10).read()

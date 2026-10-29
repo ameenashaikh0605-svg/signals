@@ -1,0 +1,24 @@
+name: Telegram group
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a test message to the saved group"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  group:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      US_TELEGRAM_BOT_TOKEN: ${{ secrets.US_TELEGRAM_BOT_TOKEN }}
+      CRYPTO_TELEGRAM_BOT_TOKEN: ${{ secrets.CRYPTO_TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python find_group.py ${{ inputs.test && '--test' || '' }}

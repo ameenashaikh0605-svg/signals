@@ -27,6 +27,7 @@ jobs:
       TZ: Asia/Kolkata
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
       US_TELEGRAM_BOT_TOKEN: ${{ secrets.US_TELEGRAM_BOT_TOKEN }}
       CRYPTO_TELEGRAM_BOT_TOKEN: ${{ secrets.CRYPTO_TELEGRAM_BOT_TOKEN }}   # only checked for being set
     steps:
