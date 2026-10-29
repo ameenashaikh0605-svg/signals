@@ -1,5 +1,5 @@
 """Print the Telegram groups each bot has been added to (name and chat id), so the group id can be saved as the
-TELEGRAM_GROUP_CHAT_ID secret. With --test, also send a hello to the saved group from each bot. Never prints tokens."""
+TELEGRAM_GROUP_CHAT_ID secret. With --test, the main bot (India swing alerts) says hello in the saved group. Never prints tokens."""
 import json
 import os
 import sys
@@ -44,8 +44,8 @@ for name, env in BOTS.items():
         print(f"{name} bot sees group '{title}': chat id {cid}")
     if not found:
         print(f"{name} bot: no group seen yet (add it to the group, then send any message there)")
-    if "--test" in sys.argv and group:
-        sent = SS._send_telegram(token, group, f"✅ {name} bot connected to this group." + SS.GROUP_NOTE)
+    if "--test" in sys.argv and group and name == "Main":
+        sent = SS._send_telegram(token, group, "✅ Connected. India swing trade alerts (Nifty, Sensex, Bank Nifty, Midcap) will be posted here." + SS.GROUP_NOTE)
         print(f"{name} bot test to group: {'sent' if sent else 'FAILED'}")
         ok = ok and sent
 if "--test" in sys.argv and not group:

@@ -43,6 +43,8 @@ MARKETS["main"] = {"title": "📅 SWING", "what": "markets", "list": "config.jso
                    "sides": (1, -1), "unit": "units", "env": "", "cur": "",
                    "when": "after each market's daily close (checked every 30 minutes)"}
 CUR = "$"
+# only the Indian index swing alerts of the main bot also go to the friends' group (TELEGRAM_GROUP_CHAT_ID)
+INDIA = {"^NSEI", "^BSESN", "^NSEBANK", "NIFTY_MID_SELECT.NS", "^NSEMDCP50"}
 # Crypto never closes, so it gets two sets of 24-hour candles: one closing at 08:00 UTC (1:30 pm India time)
 # and one closing at 16:00 UTC (9:30 pm India time). Each run uses the set that closed most recently.
 CRYPTO_SESSIONS = {8: "India session (24h candles to 1:30 pm)", 16: "US session (24h candles to 9:30 pm)"}
@@ -499,6 +501,15 @@ def send(m, texts):
     return all(SS.send_telegram(token, chat, t) for t in texts)
 
 
+def send_group(m, texts):
+    """Main bot only: India swing alerts also go to the friends' group."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if m is not MARKETS["main"] or not token or not SS.group_chat_id():
+        return
+    for t in texts:
+        SS.send_group(token, t)
+
+
 def us_market_open():
     from zoneinfo import ZoneInfo
     now = datetime.now(ZoneInfo("America/New_York"))
@@ -559,35 +570,40 @@ def live_pass(key, m, risk_usd):
                 if tr.get("stop_alert_day") == day:
                     continue
                 tr["stop_alert_day"] = day
-                stops.append(f"{'🔒' if side * (tr['stop'] - tr['entry']) > 0 else '❌'} {name}: price "
+                stops.append((it["symbol"], f"{'🔒' if side * (tr['stop'] - tr['entry']) > 0 else '❌'} {name}: price "
                              f"{px(b['c'])} broke the stop {px(tr['stop'])} ({word} at {px(tr['entry'])}, "
-                             f"{side * (tr['stop'] / tr['entry'] - 1) * 100:+.1f}% at the stop)")
+                             f"{side * (tr['stop'] / tr['entry'] - 1) * 100:+.1f}% at the stop)"))
             elif not tr.get("target_alerted"):
                 tgt = target_of(tr)
                 if (side == 1 and b["h"] >= tgt) or (side == -1 and b["l"] <= tgt):
                     tr["target_alerted"] = True
-                    targets.append(f"🎯 {name}: reached the target {px(tgt)} ({word} at {px(tr['entry'])}, "
+                    targets.append((it["symbol"], f"🎯 {name}: reached the target {px(tgt)} ({word} at {px(tr['entry'])}, "
                                    f"{side * (tgt / tr['entry'] - 1) * 100:+.1f}%). Book some profit; "
-                                   f"keep the rest with the stop at {px(tr['stop'])}.")
+                                   f"keep the rest with the stop at {px(tr['stop'])}."))
         elif pend and pend.get("alert_day") != day and (key != "us" or pend["day"] < today):
             side = pend["side"]
             if (side == 1 and b["h"] >= pend["trigger"]) or (side == -1 and b["l"] <= pend["trigger"]):
                 pend["alert_day"] = day
                 stop = pend["trigger"] - side * pend["risk"]
                 tgt = pend["trigger"] + side * CFG["target_r"] * pend["risk"]
-                entries.append(f"✅ {name}: {'BUY' if side == 1 else 'SELL'} triggered at {px(pend['trigger'])} "
+                entries.append((it["symbol"], f"✅ {name}: {'BUY' if side == 1 else 'SELL'} triggered at {px(pend['trigger'])} "
                                f"(price now {px(b['c'])})\n🛑 Stop loss {px(stop)} · 🎯 Target {px(tgt)} · 💰 "
-                               f"{qty(size(pend['trigger'], stop, risk_usd))} {m['unit']} risks about ${risk_usd:g}")
-    parts = []
-    if entries:
-        parts.append("✅ ENTRY TRIGGERED, enter now:\n\n" + "\n\n".join(entries))
-    if targets:
-        parts.append("🎯 TARGET HIT:\n" + "\n".join(targets))
-    if stops:
-        parts.append("🔔 STOP LOSS HIT, exit now:\n" + "\n".join(stops))
-    if parts:
+                               f"{qty(size(pend['trigger'], stop, risk_usd))} {m['unit']} risks about ${risk_usd:g}"))
+    def text(keep):
+        pick = lambda lines: [t for sym, t in lines if keep(sym)]
+        parts = []
+        if pick(entries):
+            parts.append("✅ ENTRY TRIGGERED, enter now:\n\n" + "\n\n".join(pick(entries)))
+        if pick(targets):
+            parts.append("🎯 TARGET HIT:\n" + "\n".join(pick(targets)))
+        if pick(stops):
+            parts.append("🔔 STOP LOSS HIT, exit now:\n" + "\n".join(pick(stops)))
         now = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
-        send(m, split(f"{m['title']} · LIVE {now} India time\n\n" + "\n\n".join(parts) + "\n\nNot advice."))
+        return split(f"{m['title']} · LIVE {now} India time\n\n" + "\n\n".join(parts) + "\n\nNot advice.") if parts else []
+
+    if entries or targets or stops:
+        send(m, text(lambda sym: True))
+        send_group(m, text(lambda sym: sym in INDIA))
     else:
         print("Live check: nothing new.")
     save_state(state_path, state)
@@ -651,6 +667,10 @@ def main():
             enrich(m, events)
             write_log(log_path, events)
             send(m, messages(m, events, open_trades, checked, len(failed), latest, risk_usd))
+            india = [e for e in events if e["symbol"] in INDIA]
+            if india:
+                send_group(m, messages(m, india, [s for s in open_trades if s in INDIA],
+                                       sum(it["symbol"] in INDIA for it in items), 0, latest, risk_usd))
         else:
             print("Main swing: nothing new." if not first else "Main swing: learned history.")
     elif first:

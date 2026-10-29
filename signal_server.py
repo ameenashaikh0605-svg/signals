@@ -825,12 +825,13 @@ def group_chat_id():
 
 
 def send_telegram(bot_token, chat_id, text):
-    ok = _send_telegram(bot_token, chat_id, text)
-    # a copy for the friends' group (TELEGRAM_GROUP_CHAT_ID), when this bot has been added to it
+    return _send_telegram(bot_token, chat_id, text)
+
+
+def send_group(bot_token, text):
+    """A copy for the friends' group (TELEGRAM_GROUP_CHAT_ID), when one is set and this bot is in it."""
     group = group_chat_id()
-    if group and group != str(chat_id).strip():
-        _send_telegram(bot_token, group, text + GROUP_NOTE)
-    return ok
+    return _send_telegram(bot_token, group, text + GROUP_NOTE) if group else False
 
 
 def _send_telegram(bot_token, chat_id, text):
