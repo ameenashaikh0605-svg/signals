@@ -30,6 +30,12 @@ for name, env in BOTS.items():
         print(f"{name} bot: not set up")
         continue
     try:
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=15) as r:
+            me = json.load(r)["result"]
+        print(f"{name} bot is '{me.get('first_name')}' (@{me.get('username')})")
+    except Exception as e:
+        print(f"{name} bot: could not read its name ({e})")
+    try:
         found = groups(token)
     except Exception as e:
         print(f"{name} bot: could not read updates ({e})")
