@@ -23,7 +23,7 @@ def groups(token):
 
 
 ok = True
-group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+group = SS.group_chat_id()
 for name, env in BOTS.items():
     token = os.environ.get(env, "").strip()
     if not token:

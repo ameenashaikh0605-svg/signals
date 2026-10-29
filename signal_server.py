@@ -818,10 +818,16 @@ def desktop_alert(text):
 GROUP_NOTE = "\n\nℹ️ Educational only, not investment advice. Do your own research."
 
 
+def group_chat_id():
+    """TELEGRAM_GROUP_CHAT_ID; group ids are always negative, so a missing minus sign is added back."""
+    g = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+    return "-" + g if g.isdigit() else g
+
+
 def send_telegram(bot_token, chat_id, text):
     ok = _send_telegram(bot_token, chat_id, text)
     # a copy for the friends' group (TELEGRAM_GROUP_CHAT_ID), when this bot has been added to it
-    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+    group = group_chat_id()
     if group and group != str(chat_id).strip():
         _send_telegram(bot_token, group, text + GROUP_NOTE)
     return ok
