@@ -839,7 +839,12 @@ def _send_telegram(bot_token, chat_id, text):
         urllib.request.urlopen(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10).read()
         return True
     except Exception as e:
-        print("telegram error:", e)
+        why = ""
+        try:
+            why = json.loads(e.read()).get("description", "")   # Telegram says why, e.g. "bot was kicked"
+        except Exception:
+            pass
+        print("telegram error:", e, why)
         return False
 
 
