@@ -224,6 +224,133 @@ def stops_main(say):
             say(f"  {tag}{label:<44} {fmt(st)}  stopped in <=5 min: {quick}/{len(trades)}")
 
 
+def fast_lab_main(say):
+    """FAST rule: better entries, stops and exits? Same 1m signals; each variant run on Nifty, Dow and Bitcoin,
+    reported for the whole month and for each half (a variant that only works in one half is luck)."""
+    for name, src, code, cost, intraday in [("NIFTY 50", "yahoo", "^NSEI", 0.0003, True),
+                                            ("DOW JONES", "yahoo", "^DJI", 0.0002, True),
+                                            ("BITCOIN", "binance", "BTCUSDT", 0.0005, False)]:
+        try:
+            bars = yahoo_1m(code) if src == "yahoo" else binance(code, "1m", 30)
+        except Exception as e:
+            say(f"{name} 1m: could not download ({e})")
+            continue
+        n, days = len(bars), (bars[-1]["t"] - bars[0]["t"]) / 86400
+        sig, _, _ = S.scalp_signals(bars)
+        v5 = S.htf_view(bars, 5, S.SCALP_DEFAULTS["htf_ema"])
+        v20 = S.htf_view(bars, 20, S.SCALP_DEFAULTS["htf_ema"])
+        keys = S.session_buckets(bars, 5)
+        c5, idx = [], []           # 5-minute candles and, per 1m bar, the index of its 5m candle
+        for b, k in zip(bars, keys):
+            if not c5 or c5[-1]["k"] != k:
+                c5.append({"k": k, "h": b["h"], "l": b["l"]})
+            else:
+                c5[-1]["h"], c5[-1]["l"] = max(c5[-1]["h"], b["h"]), min(c5[-1]["l"], b["l"])
+            idx.append(len(c5) - 1)
+
+        def structure(i, side, a5):   # beyond the last 3 finished 5m candles' low (high), plus a 0.2 ATR cushion
+            j = idx[i] - 1
+            if j < 3:
+                return None
+            if side > 0:
+                return min(c["l"] for c in c5[j - 2:j + 1]) - 0.2 * a5
+            return max(c["h"] for c in c5[j - 2:j + 1]) + 0.2 * a5
+
+        def run(entry="market", stop="atr1", exit_="target2", one_per_leg=False):
+            trades, pos, pend, leg_used = [], None, None, {}
+            for i in range(30, n - 1):
+                b, nxt = bars[i], bars[i + 1]
+                end = intraday and nxt["day"] != b["day"]
+                a5 = v5[i][1]
+                if pos:
+                    sd, px_ = pos["side"], None
+                    if (sd > 0 and b["l"] <= pos["stop"]) or (sd < 0 and b["h"] >= pos["stop"]):
+                        px_ = min(pos["stop"], b["o"]) if sd > 0 else max(pos["stop"], b["o"])
+                    elif pos.get("target") and ((sd > 0 and b["h"] >= pos["target"]) or (sd < 0 and b["l"] <= pos["target"])):
+                        px_ = max(pos["target"], b["o"]) if sd > 0 else min(pos["target"], b["o"])
+                    elif exit_ == "trend" and v5[i][0] == -sd:
+                        px_ = b["c"]                      # 5-minute trend turned against the trade
+                    elif end:
+                        px_ = b["c"]
+                    if px_ is not None:
+                        r = (sd * (px_ - pos["entry"]) - 2 * cost * pos["entry"]) / pos["risk"]
+                        trades.append({"t": pos["t"], "r": r, "ret": r * 0.005})   # 0.5% of capital risked per trade
+                        pos = None
+                    else:
+                        pos["best"] = max(pos["best"], b["c"]) if sd > 0 else min(pos["best"], b["c"])
+                        if exit_ in ("trail", "be_trail", "trend") and a5:
+                            if exit_ == "be_trail" and sd * (pos["best"] - pos["entry"]) >= pos["risk"]:
+                                pos["stop"] = max(pos["stop"], pos["entry"]) if sd > 0 else min(pos["stop"], pos["entry"])
+                            if exit_ != "trend" or sd * (pos["best"] - pos["entry"]) >= pos["risk"]:
+                                t = pos["best"] - sd * 2.0 * a5
+                                pos["stop"] = max(pos["stop"], t) if sd > 0 else min(pos["stop"], t)
+                if pos or end or not a5:
+                    if end:
+                        pend = None
+                    continue
+                if intraday and any(bars[min(i + k, n - 1)]["day"] != b["day"] for k in range(1, 4)):
+                    continue
+                # a waiting pullback order: filled when price comes back to the limit
+                if pend:
+                    sd = pend["side"]
+                    if i > pend["until"] or v5[i][0] != sd or v20[i][0] != sd:
+                        pend = None
+                    elif (sd > 0 and nxt["l"] <= pend["limit"]) or (sd < 0 and nxt["h"] >= pend["limit"]):
+                        fill = min(pend["limit"], nxt["o"]) if sd > 0 else max(pend["limit"], nxt["o"])
+                        pos = open_pos(sd, fill, i + 1, pend["a5"], nxt["t"], stop, exit_)
+                        pend = None
+                        continue
+                s_ = sig[i]
+                if not s_:
+                    continue
+                if one_per_leg:   # one trade per 20-minute trend leg: skip while the last trade's leg is unchanged
+                    if leg_used.get(s_) is not None and all(v20[k][0] == s_ for k in range(leg_used[s_], i + 1)):
+                        continue
+                    leg_used[s_] = i
+                if entry == "market":
+                    pos = open_pos(s_, nxt["o"], i + 1, a5, nxt["t"], stop, exit_, i)
+                else:   # wait for a pullback of half a 5m candle (or to the structure level), up to 15 minutes
+                    pend = {"side": s_, "limit": b["c"] - s_ * 0.5 * a5, "until": i + 15, "a5": a5}
+            return trades
+
+        def open_pos(sd, entry, i, a5, t, stop, exit_, sig_i=None):
+            k = sig_i if sig_i is not None else i - 1
+            if stop.startswith("atr"):
+                risk = float(stop[3:]) * a5
+            else:
+                lvl = structure(k, sd, a5)
+                risk = sd * (entry - lvl) if lvl is not None else 1.5 * a5
+                risk = min(max(risk, 0.75 * a5), 3 * a5)   # keep it between 0.75 and 3 ATR
+            tgt = None
+            if exit_.startswith("target"):
+                tgt = entry + sd * float(exit_[6:]) * risk
+            return {"side": sd, "entry": entry, "risk": risk, "stop": entry - sd * risk, "target": tgt,
+                    "best": entry, "t": t}
+
+        variants = [
+            ("NOW: market entry, stop 1x ATR, target 2R", dict()),
+            ("stop 2x ATR, target 2R", dict(stop="atr2")),
+            ("stop under 5m swing, target 2R", dict(stop="swing")),
+            ("stop under 5m swing, trail 2x ATR after 1R", dict(stop="swing", exit_="trend")),
+            ("stop 2x ATR, breakeven at 1R then trail", dict(stop="atr2", exit_="be_trail")),
+            ("stop 2x ATR, trail 2x ATR", dict(stop="atr2", exit_="trail")),
+            ("pullback entry, stop 1x ATR, target 2R", dict(entry="pullback")),
+            ("pullback entry, stop 2x ATR, target 2R", dict(entry="pullback", stop="atr2")),
+            ("pullback entry, 5m swing stop, target 2R", dict(entry="pullback", stop="swing")),
+            ("pullback entry, 5m swing stop, trail after 1R", dict(entry="pullback", stop="swing", exit_="trend")),
+            ("pullback, 2x ATR stop, breakeven+trail", dict(entry="pullback", stop="atr2", exit_="be_trail")),
+            ("one trade per trend leg, 5m swing stop, trail", dict(stop="swing", exit_="trend", one_per_leg=True)),
+            ("one per leg, pullback, 5m swing stop, trail", dict(entry="pullback", stop="swing", exit_="trend", one_per_leg=True)),
+        ]
+        cut = bars[n // 2]["t"]
+        say(f"\n=== {name} 1m, {n} bars, {days:.0f} days (0.5% of capital risked per trade) ===")
+        for label, kw in variants:
+            tr = run(**kw)
+            a, h1, h2 = stats(tr, days), stats([t for t in tr if t["t"] < cut], days / 2), stats([t for t in tr if t["t"] >= cut], days / 2)
+            say(f"  {label:<48} {fmt(a)}")
+            say(f"  {'    1st half | 2nd half':<48} {fmt(h1)} | {fmt(h2)}")
+
+
 def _daily_dir(daily):
     """day -> supertrend direction of the last FINISHED daily candle before that day."""
     st = S.supertrend(daily)
@@ -511,6 +638,9 @@ def main():
         with open(os.path.join(HERE, "filter_results.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         say("\nSaved filter_results.txt")
+        return
+    if "fastlab" in args:
+        fast_lab_main(say)
         return
     if "stops" in args:
         stops_main(say)
