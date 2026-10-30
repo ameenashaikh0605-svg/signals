@@ -185,6 +185,45 @@ def scalp_main(say):
         json.dump(results, f, indent=1)
 
 
+def stops_main(say):
+    """Is the FAST rule's stop the problem? Same 1m signals, different stop distances and targets."""
+    cfg = dict(S.DEFAULTS)
+    for name, src, code, cost, intraday in [("NIFTY 50", "yahoo", "^NSEI", 0.0003, True),
+                                            ("DOW JONES", "yahoo", "^DJI", 0.0002, True),
+                                            ("BITCOIN", "binance", "BTCUSDT", 0.0005, False)]:
+        try:
+            bars = yahoo_1m(code) if src == "yahoo" else binance(code, "1m", 30)
+        except Exception as e:
+            say(f"{name} 1m: could not download ({e})")
+            continue
+        days = (bars[-1]["t"] - bars[0]["t"]) / 86400
+        sig, risk, _ = S.scalp_signals(bars)
+        lb = S.SCALP_DEFAULTS["trigger_lookback"]
+        say(f"\n=== {name} 1m, {len(bars)} bars, {days:.0f} days ===")
+        say("  NOW = the current setting (stop 1x 5m ATR, target 2R)")
+        rows = []
+        for mult in (0.5, 1.0, 1.5, 2.0, 3.0):
+            for tr_ in (1.0, 1.5, 2.0, 3.0):
+                rows.append((f"stop {mult}x 5m ATR, target {tr_}R", "target", tr_,
+                             (lambda m_: lambda i: risk[i] and m_ * risk[i])(mult)))
+        # stop just beyond the low (high) of the last 10 one-minute candles
+        def swing(i):
+            if not sig[i]:
+                return None
+            ref = min(x["l"] for x in bars[i - lb:i + 1]) if sig[i] > 0 else max(x["h"] for x in bars[i - lb:i + 1])
+            return abs(bars[i]["c"] - ref) * 1.05
+        for tr_ in (1.0, 2.0):
+            rows.append((f"stop below last 10-candle low, target {tr_}R", "target", tr_, swing))
+        rows.append(("stop 1.5x 5m ATR, trailing stop", "trail", 2.0, lambda i: risk[i] and 1.5 * risk[i]))
+        for label, mode, tr_, rf in rows:
+            c = dict(cfg, target_r=tr_)
+            trades = simulate(bars, lambda i: (sig[i], ""), mode, c, cost, intraday, None, rf)
+            st = stats(trades, days)
+            quick = sum(1 for t in trades if t["why"] == "stop" and t["bars"] <= 5)
+            tag = "NOW " if label == "stop 1.0x 5m ATR, target 2.0R" else "    "
+            say(f"  {tag}{label:<44} {fmt(st)}  stopped in <=5 min: {quick}/{len(trades)}")
+
+
 def _daily_dir(daily):
     """day -> supertrend direction of the last FINISHED daily candle before that day."""
     st = S.supertrend(daily)
@@ -472,6 +511,9 @@ def main():
         with open(os.path.join(HERE, "filter_results.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         say("\nSaved filter_results.txt")
+        return
+    if "stops" in args:
+        stops_main(say)
         return
     if "scalp" in args:
         scalp_main(say)
