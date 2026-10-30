@@ -15,3 +15,4 @@ time,symbol,timeframe,event,side,price,stop,target,result,R,reason
 2026-10-30 09:50:20,SENSEX,15m,ENTRY,BUY,74345.9922,74090.5226,74856.9314,,,Opening range breakout up
 2026-10-30 10:15:22,MIDCAP NIFTY,15m,ENTRY,SELL,13207.0,13263.406,13094.188,,,Opening range breakdown
 2026-10-30 10:35:20,SENSEX,15m,EXIT,BUY,74090.5226,74090.5226,74856.9314,❌ Stop hit,-1.0,Opening range breakout up
+2026-10-30 11:15:21,NIFTY 50,15m,ENTRY,BUY,23007.5,22943.2145,23136.071,,,Opening range breakout up
