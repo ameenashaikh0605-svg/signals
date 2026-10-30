@@ -66,10 +66,10 @@ DEFAULTS = {
         "fast": {"label": "⚡ FAST 1m/5m/20m (experimental)", "timeframe": "1m", "rule": "scalp", "exit": "target"},
     },
     "enabled_modes": ["swing", "intraday", "fast"],
-    # FAST lost money on Bitcoin and the Dow with every stop tried (30-day test, 30 Oct 2026); on Nifty a
-    # stop 2x the 5-minute ATR did better than 1x. Empty fast_markets = every market.
+    # FAST lost money on Bitcoin and the Dow with every entry, stop and exit tried (30-day tests, 30 Oct 2026);
+    # on Nifty a stop beyond the last three 5-minute candles did best. Empty fast_markets = every market.
     "fast_markets": ["^NSEI"],
-    "fast_scalp": {"stop_htf_atr": 2.0},
+    "fast_scalp": {"stop_mode": "swing"},
     "intraday_trend_filter": False,   # intraday (15m) alerts only in the direction of the daily Supertrend
     "selected": "ALL",
     "strikes": {},              # option strike step per symbol, e.g. {"AAPL": 5, "RELIANCE.NS": 20}          # "ALL" or a list of symbol codes, e.g. ["^NSEI"]: only these are fetched and alerted

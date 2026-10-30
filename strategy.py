@@ -347,6 +347,8 @@ SCALP_DEFAULTS = {
     "push_close_loc": 0.7,    # ...and closes in the top 30% of its range (bottom 30% for sells)
     "push_range_atr": 1.0,    # no volume (index): push candle range >= 1 x 1-minute ATR
     "stop_htf_atr": 1.0,      # stop = 1 x ATR(14) of the 5-minute candles
+    "stop_mode": "atr",       # "swing": stop beyond the last 3 finished 5m candles' low (high) + 0.2 ATR,
+                              # kept between 0.75 and 3 x the 5m ATR (did best on Nifty, 30-day test 30 Oct 2026)
     "target_r": 2.0,
     "skip_first_min": 5,      # no trades in the first 5 minutes of a session
 }
@@ -404,6 +406,14 @@ def scalp_signals(bars, scfg=None):
     sidx = session_index(bars)
     lb = p["trigger_lookback"]
     sig, risk, why = [0] * n, [None] * n, [""] * n
+    c5, i5 = [], []   # 5-minute candles (for the swing stop) and, per 1m bar, its 5m candle
+    if p["stop_mode"] == "swing":
+        for b, k in zip(bars, session_buckets(bars, 5)):
+            if not c5 or c5[-1]["k"] != k:
+                c5.append({"k": k, "h": b["h"], "l": b["l"]})
+            else:
+                c5[-1]["h"], c5[-1]["l"] = max(c5[-1]["h"], b["h"]), min(c5[-1]["l"], b["l"])
+            i5.append(len(c5) - 1)
     for i in range(max(lb, 30), n):
         b = bars[i]
         if sidx[i] < p["skip_first_min"] or sidx[i] < lb:
@@ -437,6 +447,12 @@ def scalp_signals(bars, scfg=None):
             continue
         sig[i] = side
         risk[i] = p["stop_htf_atr"] * htf_atr
+        j = i5[i] - 1 if c5 else -1
+        if j >= 3:
+            last3 = c5[j - 2:j + 1]
+            lvl = (min(x["l"] for x in last3) - 0.2 * htf_atr if side == 1
+                   else max(x["h"] for x in last3) + 0.2 * htf_atr)
+            risk[i] = min(max(side * (b["c"] - lvl), 0.75 * htf_atr), 3 * htf_atr)
         tfs = "/".join(f"{m}m" for m in p["htf_minutes"])
         why[i] = (f"{'Buyers' if side == 1 else 'Sellers'} pushing: 1m broke {lb}-candle {'high' if side == 1 else 'low'}, "
                   f"{push}; {tfs} trend {'up' if side == 1 else 'down'}; {'above' if side == 1 else 'below'} VWAP")

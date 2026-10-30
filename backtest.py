@@ -349,6 +349,13 @@ def fast_lab_main(say):
             a, h1, h2 = stats(tr, days), stats([t for t in tr if t["t"] < cut], days / 2), stats([t for t in tr if t["t"] >= cut], days / 2)
             say(f"  {label:<48} {fmt(a)}")
             say(f"  {'    1st half | 2nd half':<48} {fmt(h1)} | {fmt(h2)}")
+        # the exact rule the laptop will run (strategy.scalp_signals with stop_mode "swing")
+        sw_sig, sw_risk, _ = S.scalp_signals(bars, {"stop_mode": "swing"})
+        tr = simulate(bars, lambda i: (sw_sig[i], ""), "target", dict(S.DEFAULTS, target_r=2.0), cost, intraday,
+                      None, lambda i: sw_risk[i])
+        a, h1, h2 = stats(tr, days), stats([t for t in tr if t["t"] < cut], days / 2), stats([t for t in tr if t["t"] >= cut], days / 2)
+        say(f"  {'NEW LIVE RULE (swing stop, 2R)':<48} {fmt(a)}")
+        say(f"  {'    1st half | 2nd half':<48} {fmt(h1)} | {fmt(h2)}")
 
 
 def _daily_dir(daily):
