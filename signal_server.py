@@ -66,6 +66,10 @@ DEFAULTS = {
         "fast": {"label": "⚡ FAST 1m/5m/20m (experimental)", "timeframe": "1m", "rule": "scalp", "exit": "target"},
     },
     "enabled_modes": ["swing", "intraday", "fast"],
+    # FAST lost money on Bitcoin and the Dow with every stop tried (30-day test, 30 Oct 2026); on Nifty a
+    # stop 2x the 5-minute ATR did better than 1x. Empty fast_markets = every market.
+    "fast_markets": ["^NSEI"],
+    "fast_scalp": {"stop_htf_atr": 2.0},
     "intraday_trend_filter": False,   # intraday (15m) alerts only in the direction of the daily Supertrend
     "selected": "ALL",
     "strikes": {},              # option strike step per symbol, e.g. {"AAPL": 5, "RELIANCE.NS": 20}          # "ALL" or a list of symbol codes, e.g. ["^NSEI"]: only these are fetched and alerted
@@ -392,6 +396,9 @@ class Engine:
         for w in cfg["watch"]:
             self._add(w)
 
+    def scalp_target(self):
+        return dict(S.SCALP_DEFAULTS, **(self.cfg.get("fast_scalp") or {}))["target_r"]
+
     def _add(self, w):
         """Adds one row per enabled mode for this symbol. Returns the first row, or None."""
         code = str(w.get("code", "")).strip()
@@ -403,6 +410,8 @@ class Engine:
         crypto = src == "binance"
         first = None
         for m in self.cfg["enabled_modes"]:
+            if m == "fast" and self.cfg.get("fast_markets") and code not in self.cfg["fast_markets"]:
+                continue
             mc = self.cfg["modes"][m]
             pick = lambda k: (mc.get("crypto_" + k) if crypto else None) or mc[k]
             it = {"name": (w.get("name") or code).strip(), "code": code, "source": src, "mode": m,
@@ -474,7 +483,7 @@ class Engine:
         a = ind["atr"][i]
         scalp = None
         if it["rule"] == "scalp":
-            scalp = S.scalp_signals(bars)
+            scalp = S.scalp_signals(bars, self.cfg.get("fast_scalp"))
             views = [S.htf_view(bars, m, S.SCALP_DEFAULTS["htf_ema"])[i][0] for m in S.SCALP_DEFAULTS["htf_minutes"]]
             names = [f"{m}m" for m in S.SCALP_DEFAULTS["htf_minutes"]]
             checks = [f"{'↑' if v > 0 else '↓' if v < 0 else '–'} {n} trend" for v, n in zip(views, names)]
@@ -502,7 +511,7 @@ class Engine:
             return
         if scalp:
             side, why = scalp[0][i], scalp[2][i]
-            cfg = dict(cfg, stop_atr=1.0, target_r=S.SCALP_DEFAULTS["target_r"])
+            cfg = dict(cfg, stop_atr=1.0, target_r=self.scalp_target())
             a = scalp[1][i] or a
         else:
             side, why = S.signal_at(bars, ind, i, cfg, it["rule"], intraday)
@@ -570,7 +579,7 @@ class Engine:
             except Exception as e:
                 print(f"{it['name']} history check: {e}")
                 hist = None
-            target_r = S.SCALP_DEFAULTS["target_r"] if it["rule"] == "scalp" else cfg["target_r"]
+            target_r = self.scalp_target() if it["rule"] == "scalp" else cfg["target_r"]
             text = T.tm_text(tm, hist, target_r)
         except Exception as e:
             tm, text = {"error": str(e)}, f"🔮 Odds check: skipped ({e})"
