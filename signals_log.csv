@@ -18,3 +18,4 @@ time,symbol,timeframe,event,side,price,stop,target,result,R,reason
 2026-10-30 11:15:21,NIFTY 50,15m,ENTRY,BUY,23007.5,22943.2145,23136.071,,,Opening range breakout up
 2026-10-30 11:45:22,MIDCAP NIFTY,15m,EXIT,SELL,13263.406,13263.406,13094.188,❌ Stop hit,-1.0,Opening range breakdown
 2026-10-30 15:15:20,NIFTY 50,15m,EXIT,BUY,23010.8496,22943.2145,23136.071,"⏰ Session ending, close the trade",0.05,Opening range breakout up
+2026-10-31 18:30:21,BITCOIN,1h,EXIT,SELL,77742.4941,77742.4941,,🔒 Trailing stop hit,0.24,20-bar breakdown with volume
